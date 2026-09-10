@@ -3,27 +3,23 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
 )
 
-func Detach(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-}
+func Detach(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 
-func ProcessAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
-}
-
-func Stop(pid int) error {
-	p, err := os.FindProcess(pid)
-	if err != nil {
+func lockFile(file *os.File) error {
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return ErrLocked
+		}
 		return err
 	}
-	return p.Signal(syscall.SIGTERM)
 }

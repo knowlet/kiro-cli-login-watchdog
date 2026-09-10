@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/knowlet/kiro-cli-login-watchdog/internal/config"
@@ -17,7 +16,6 @@ type KiroClient interface {
 	Logout(context.Context) error
 	Login(context.Context, func(kiro.DeviceFlow) error) error
 }
-
 type Watchdog struct {
 	cfg         config.Config
 	kiro        KiroClient
@@ -33,13 +31,11 @@ func New(cfg config.Config, client KiroClient, n notifier.Notifier, logger *log.
 	}
 	return w
 }
-
 func (w *Watchdog) Run(ctx context.Context) error {
 	w.logger.Printf("watchdog started; check_interval=%s force_relogin_interval=%s auth_method=%s", w.cfg.CheckInterval, w.cfg.ForceReloginInterval, w.cfg.AuthMethod)
 	if err := w.Check(ctx); err != nil {
 		w.logger.Printf("initial check failed: %v", err)
 	}
-
 	ticker := time.NewTicker(w.cfg.CheckInterval)
 	defer ticker.Stop()
 	for {
@@ -54,19 +50,16 @@ func (w *Watchdog) Run(ctx context.Context) error {
 		}
 	}
 }
-
 func (w *Watchdog) Check(ctx context.Context) error {
 	loggedIn, _, err := w.kiro.WhoAmI(ctx)
 	if err != nil {
 		return err
 	}
-
 	force := loggedIn && w.cfg.ForceReloginInterval > 0 && !w.lastRelogin.IsZero() && time.Since(w.lastRelogin) >= w.cfg.ForceReloginInterval
 	if loggedIn && !force {
 		w.logger.Printf("kiro-cli authentication is healthy")
 		return nil
 	}
-
 	if force {
 		w.logger.Printf("proactive re-login interval reached; logging out")
 		if err := w.kiro.Logout(ctx); err != nil {
@@ -75,14 +68,10 @@ func (w *Watchdog) Check(ctx context.Context) error {
 	} else {
 		w.logger.Printf("kiro-cli is not authenticated; starting device-flow login")
 	}
-
 	notified := false
 	err = w.kiro.Login(ctx, func(flow kiro.DeviceFlow) error {
 		notified = true
-		message := fmt.Sprintf(
-			"Kiro CLI login required\n\nCode: %s\nOpen: %s\n\nComplete the sign-in in your browser. The watchdog will keep waiting for Kiro CLI to finish the device flow.",
-			flow.Code, flow.URL,
-		)
+		message := fmt.Sprintf("Kiro CLI login required\n\nCode: %s\nOpen: %s\n\nComplete the sign-in in your browser. The watchdog will keep waiting for Kiro CLI to finish the device flow.", flow.Code, flow.URL)
 		notifyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		return w.notifier.Notify(notifyCtx, message)
@@ -93,7 +82,6 @@ func (w *Watchdog) Check(ctx context.Context) error {
 		}
 		return err
 	}
-
 	loggedIn, _, verifyErr := w.kiro.WhoAmI(ctx)
 	if verifyErr != nil {
 		return fmt.Errorf("verify login: %w", verifyErr)
@@ -103,7 +91,6 @@ func (w *Watchdog) Check(ctx context.Context) error {
 	}
 	w.lastRelogin = time.Now()
 	w.logger.Printf("kiro-cli login restored")
-
 	if w.cfg.NotifySuccess {
 		notifyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
@@ -112,13 +99,4 @@ func (w *Watchdog) Check(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func RedactOutput(output string) string {
-	// Reserved for future diagnostic notifications. Do not let credentials or
-	// device URLs leak into logs/messages by default.
-	if strings.TrimSpace(output) == "" {
-		return ""
-	}
-	return "[kiro-cli output redacted]"
 }

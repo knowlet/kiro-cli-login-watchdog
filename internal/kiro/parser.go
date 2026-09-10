@@ -25,32 +25,50 @@ func NewDeviceFlowParser(callback func(DeviceFlow) error) *DeviceFlowParser {
 	return &DeviceFlowParser{callback: callback}
 }
 
+// deviceURLs is shared with log redaction: every URL accepted by the parser
+// must also be treated as a credential by the logger.
+func deviceURLs(clean string) []DeviceFlow {
+	var flows []DeviceFlow
+	for _, raw := range urlRE.FindAllString(clean, -1) {
+		raw = strings.TrimRight(raw, ".,;)]}")
+		parsed, err := url.Parse(raw)
+		code := ""
+		if err == nil {
+			code = parsed.Query().Get("user_code")
+			// IAM Identity Center puts the router path AND query after '#'.
+			if code == "" {
+				if fragment, e := url.Parse(parsed.Fragment); e == nil {
+					code = fragment.Query().Get("user_code")
+				}
+			}
+		}
+		if strings.Contains(strings.ToLower(clean), "open this url") ||
+			code != "" || strings.Contains(strings.ToLower(raw), "/device") {
+			flows = append(flows, DeviceFlow{Code: code, URL: raw})
+		}
+	}
+	return flows
+}
+
 func (p *DeviceFlowParser) Feed(line string) {
 	clean := ansiRE.ReplaceAllString(line, "")
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.sent || p.err != nil {
 		return
 	}
-
 	if m := codeRE.FindStringSubmatch(clean); len(m) == 2 {
 		p.flow.Code = m[1]
 	}
-	if raw := urlRE.FindString(clean); raw != "" {
-		raw = strings.TrimRight(raw, ".,;)]}")
-		parsed, parseErr := url.Parse(raw)
-		isDeviceURL := strings.Contains(strings.ToLower(clean), "open this url") ||
-			(parseErr == nil && parsed.Query().Get("user_code") != "") ||
-			strings.Contains(strings.ToLower(raw), "/device")
-		if isDeviceURL {
-			p.flow.URL = raw
-			if p.flow.Code == "" && parseErr == nil {
-				p.flow.Code = parsed.Query().Get("user_code")
-			}
+	for _, flow := range deviceURLs(clean) {
+		p.flow.URL = flow.URL
+		if flow.Code != "" {
+			p.flow.Code = flow.Code
+		}
+		if p.flow.Code != "" {
+			break
 		}
 	}
-
 	if p.flow.Code != "" && p.flow.URL != "" {
 		if p.callback != nil {
 			if err := p.callback(p.flow); err != nil {

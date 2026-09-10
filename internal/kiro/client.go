@@ -1,16 +1,15 @@
 package kiro
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/knowlet/kiro-cli-login-watchdog/internal/config"
@@ -32,45 +31,64 @@ type Client struct {
 }
 
 func New(cfg config.Config, logger *log.Logger) *Client {
-	return &Client{
-		bin:            cfg.KiroBin,
-		authMethod:     cfg.AuthMethod,
-		identityURL:    cfg.IdentityProvider,
-		region:         cfg.Region,
-		commandTimeout: cfg.CommandTimeout,
-		loginTimeout:   cfg.LoginTimeout,
-		logger:         logger,
-	}
+	return &Client{bin: cfg.KiroBin, authMethod: cfg.AuthMethod,
+		identityURL: cfg.IdentityProvider, region: cfg.Region,
+		commandTimeout: cfg.CommandTimeout, loginTimeout: cfg.LoginTimeout, logger: logger}
+}
+
+// command deliberately uses argv, never a shell. bin is trusted local operator
+// configuration (KCLW_KIRO_BIN), not CLI output or notification input. Do not
+// split it on spaces: an executable path may legitimately contain spaces.
+func (c *Client) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, c.bin, args...)
+	// Bound waiting on descriptors inherited by a misbehaving descendant.
+	cmd.WaitDelay = 2 * time.Second
+	return cmd
 }
 
 func (c *Client) WhoAmI(ctx context.Context) (bool, string, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
 	defer cancel()
-
-	cmd := exec.CommandContext(commandCtx, c.bin, "whoami", "--format", "json")
-	out, err := cmd.CombinedOutput()
+	out, err := c.command(commandCtx, "whoami", "--format", "json").CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if commandCtx.Err() != nil {
-		return false, output, fmt.Errorf("kiro-cli whoami timed out: %w", commandCtx.Err())
+		return false, output, fmt.Errorf("kiro-cli whoami interrupted: %w", commandCtx.Err())
 	}
 	if err == nil {
 		return true, output, nil
 	}
-	var execErr *exec.Error
-	if errors.As(err, &execErr) {
-		return false, output, fmt.Errorf("execute %s: %w", c.bin, err)
+	// A non-zero exit is not a dedicated authentication status. Only recognize
+	// explicit logged-out diagnostics; flags, service, spawn and signal failures
+	// must not start an interactive login. Do not log raw command output here.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 && isLoggedOut(output) {
+		return false, output, nil
 	}
-	// Kiro documents a non-zero "not logged in" error for whoami. Treat other
-	// normal command exit statuses as unauthenticated and let Login verify it.
-	return false, output, nil
+	return false, output, fmt.Errorf("kiro-cli whoami failed: %w", err)
+}
+
+var loggedOutRE = regexp.MustCompile("(?i)^(?:error:\\s*)?(?:you are )?not logged in[.!]?(?:\\s+(?:please (?:log in with|run)|run) `?kiro-cli login`?\\.?)?$")
+
+func isLoggedOut(output string) bool {
+	clean := strings.TrimSpace(ansiRE.ReplaceAllString(output, ""))
+	if loggedOutRE.MatchString(clean) {
+		return true
+	}
+	var diagnostic struct {
+		Error string `json:"error"`
+	}
+	return json.Unmarshal([]byte(clean), &diagnostic) == nil && loggedOutRE.MatchString(diagnostic.Error)
 }
 
 func (c *Client) Logout(ctx context.Context) error {
 	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, c.bin, "logout")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("kiro-cli logout: %w (%s)", err, strings.TrimSpace(string(out)))
+	_, err := c.command(commandCtx, "logout").CombinedOutput()
+	if commandCtx.Err() != nil {
+		return fmt.Errorf("kiro-cli logout interrupted: %w", commandCtx.Err())
+	}
+	if err != nil {
+		return fmt.Errorf("kiro-cli logout: %w", err)
 	}
 	return nil
 }
@@ -78,53 +96,35 @@ func (c *Client) Logout(ctx context.Context) error {
 func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error) error {
 	loginCtx, cancel := context.WithTimeout(ctx, c.loginTimeout)
 	defer cancel()
-
-	args := c.LoginArgs()
-	cmd := exec.CommandContext(loginCtx, c.bin, args...)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start kiro-cli login: %w", err)
-	}
-
 	parser := NewDeviceFlowParser(func(flow DeviceFlow) error {
-		if onDeviceFlow == nil {
-			return nil
-		}
-		if err := onDeviceFlow(flow); err != nil {
-			cancel()
-			return err
+		if onDeviceFlow != nil {
+			if err := onDeviceFlow(flow); err != nil {
+				cancel()
+				return err
+			}
 		}
 		return nil
 	})
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		c.scanLoginOutput(stdout, parser)
-	}()
-	go func() {
-		defer wg.Done()
-		c.scanLoginOutput(stderr, parser)
-	}()
-
-	waitErr := cmd.Wait()
-	wg.Wait()
-	if parser.Err() != nil {
-		return parser.Err()
+	stdout := &loginOutput{client: c, parser: parser, cancel: cancel}
+	stderr := &loginOutput{client: c, parser: parser, cancel: cancel}
+	cmd := c.command(loginCtx, c.LoginArgs()...)
+	// With Writer outputs, os/exec owns the reader goroutines and Wait drains
+	// both streams before returning. No StdoutPipe/Wait close-before-read race.
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	waitErr := cmd.Run()
+	stdout.flush()
+	stderr.flush()
+	if err := parser.Err(); err != nil {
+		return err
 	}
-	if errors.Is(loginCtx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("kiro-cli login timed out: %w", loginCtx.Err())
+	if stdout.err != nil {
+		return stdout.err
+	}
+	if stderr.err != nil {
+		return stderr.err
 	}
 	if loginCtx.Err() != nil {
-		return fmt.Errorf("kiro-cli login canceled: %w", loginCtx.Err())
+		return fmt.Errorf("kiro-cli login interrupted: %w", loginCtx.Err())
 	}
 	if waitErr != nil {
 		return fmt.Errorf("kiro-cli login failed: %w", waitErr)
@@ -136,11 +136,7 @@ func (c *Client) LoginArgs() []string {
 	args := []string{"login"}
 	switch c.authMethod {
 	case config.AuthIdentityCenter:
-		args = append(args,
-			"--license", "pro",
-			"--identity-provider", c.identityURL,
-			"--region", c.region,
-		)
+		args = append(args, "--license", "pro", "--identity-provider", c.identityURL, "--region", c.region)
 	case config.AuthGoogle:
 		args = append(args, "--social", "google")
 	case config.AuthGitHub:
@@ -151,30 +147,62 @@ func (c *Client) LoginArgs() []string {
 	return append(args, "--use-device-flow")
 }
 
-func (c *Client) scanLoginOutput(r io.Reader, parser *DeviceFlowParser) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if c.logger != nil {
-			c.logger.Printf("kiro-cli: %s", sanitizeLogLine(line))
+const maxLoginLine = 1024 * 1024
+
+// Each stream has one Writer; os/exec joins both copying goroutines before
+// Login inspects err or flushes a final line without a newline.
+type loginOutput struct {
+	client  *Client
+	parser  *DeviceFlowParser
+	cancel  context.CancelFunc
+	pending []byte
+	err     error
+}
+
+func (w *loginOutput) Write(data []byte) (int, error) {
+	total := len(data)
+	for len(data) > 0 {
+		n := bytes.IndexByte(data, '\n')
+		complete := n >= 0
+		if !complete {
+			n = len(data)
 		}
-		parser.Feed(line)
+		if len(w.pending)+n > maxLoginLine {
+			w.err = errors.New("kiro-cli login output line exceeds 1 MiB")
+			w.pending = nil
+			w.cancel()
+			return total - len(data), w.err
+		}
+		w.pending = append(w.pending, data[:n]...)
+		data = data[n:]
+		if complete {
+			w.flush()
+			data = data[1:]
+		}
 	}
-	if err := scanner.Err(); err != nil && c.logger != nil {
-		c.logger.Printf("reading kiro-cli output: %v", err)
+	return total, nil
+}
+
+func (w *loginOutput) flush() {
+	if len(w.pending) == 0 {
+		return
 	}
+	line := string(w.pending)
+	w.pending = w.pending[:0]
+	if w.client.logger != nil {
+		w.client.logger.Printf("kiro-cli: %s", sanitizeLogLine(line))
+	}
+	w.parser.Feed(line)
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func sanitizeLogLine(line string) string {
-	// Device codes are short-lived credentials. Keep them out of the daemon log.
 	clean := ansiRE.ReplaceAllString(line, "")
-	if strings.Contains(strings.ToLower(clean), "code:") {
+	if codeRE.MatchString(clean) {
 		return "[device code emitted; redacted]"
 	}
-	if strings.Contains(strings.ToLower(clean), "open this url:") {
+	if len(deviceURLs(clean)) > 0 {
 		return "[device login URL emitted; redacted]"
 	}
 	return clean
