@@ -10,6 +10,21 @@ matrix fail-fast; that working change is retained. CI now adds formatting checks
 race detection, and real subprocess lifecycle tests on all three operating systems.
 The module language minimum remains Go 1.22; use a supported Go toolchain on current OS releases.
 
+The added formatting gate exposed Windows checkout CRLF conversion (run
+34431669921). `.gitattributes` now pins Go source to LF on every OS; the gate
+remains enabled on Windows. Run 34431820503 passed all three native platforms.
+
+A subsequent macOS race run (34432505474) exposed a crash-test timing assumption:
+immediately after killing and reaping the daemon, its lifetime lock could still
+be held while the control endpoint was already unavailable. Process wait is not
+a barrier for every inherited file reference; `flock` references are shared
+across `fork` and may survive the parent until the child's close-on-exec cleanup.
+That explains a possible transient window; no kernel trace was collected to
+attribute this individual failure to a particular reference. The test now waits
+up to five seconds for actual lifetime-lock release before asserting stopped
+status and restart. A separate regression verifies the wait fails on a held
+lock and succeeds on release. No platform, assertion, or race check was skipped.
+
 ## Instance ownership and graceful shutdown
 
 `start`, `run`, and `once` share an OS-backed lifetime lock at `<PID file>.lock`.

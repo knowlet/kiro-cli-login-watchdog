@@ -185,10 +185,22 @@ func TestCrashReleasesLockAndAllowsRestart(t *testing.T) {
 	t.Cleanup(func() { _ = child.Process.Kill() })
 	path := filepath.Join(dir, "watchdog.pid")
 	waitForFile(t, path)
+	record, err := daemon.ReadRecord(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := child.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	_ = child.Wait()
+	// Waiting for the parent is not a barrier for all references to its lock:
+	// a concurrent fork can retain one until exec closes inherited descriptors.
+	// Assert bounded lock release, not same-instant release after process wait.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := daemon.WaitStopped(ctx, path, record); err != nil {
+		t.Fatalf("crashed instance did not release its lifetime lock: %v", err)
+	}
 	// The retained Windows process handle/stale state is not proof of life.
 	if _, running, err := daemon.Status(context.Background(), path); err != nil || running {
 		t.Fatalf("running=%v err=%v", running, err)
