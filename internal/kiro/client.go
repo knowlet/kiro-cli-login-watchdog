@@ -117,6 +117,7 @@ func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error)
 	waitErr := cmd.Run()
 	stdout.flush()
 	stderr.flush()
+	parser.Finalize()
 	if err := parser.Err(); err != nil {
 		return err
 	}
