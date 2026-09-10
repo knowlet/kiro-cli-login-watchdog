@@ -16,7 +16,7 @@ func TestLoginArgs(t *testing.T) {
 		{
 			name: "identity center",
 			cfg:  config.Config{AuthMethod: config.AuthIdentityCenter, IdentityProvider: "https://d-example.awsapps.com/start", Region: "ap-northeast-1"},
-			want: []string{"login", "--license", "pro", "--identity-provider", "https://d-example.awsapps.com/start", "--region", "ap-northeast-1", "--use-device-flow"},
+			want: []string{"login", "--identity-provider", "https://d-example.awsapps.com/start", "--region", "ap-northeast-1", "--use-device-flow"},
 		},
 		{
 			name: "google",
