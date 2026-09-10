@@ -1,0 +1,3 @@
+# Keep Go source identical across Unix and Windows checkouts.
+# gofmt emits LF; Git for Windows must not convert these files to CRLF.
+*.go text eol=lf
