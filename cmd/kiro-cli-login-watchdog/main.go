@@ -26,7 +26,7 @@ const version = "0.1.0-dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
@@ -116,12 +116,14 @@ func startDaemon(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	defer transition.Close()
+	defer func() { _ = transition.Close() }()
 	probe, err := daemon.Acquire(cfg.PIDFile + ".lock")
 	if err != nil {
 		return err
 	}
-	probe.Close()
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("release instance probe: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o700); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
 	}
@@ -129,7 +131,7 @@ func startDaemon(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
@@ -167,7 +169,7 @@ func stopDaemon(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	defer transition.Close()
+	defer func() { _ = transition.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	record, running, err := daemon.Status(ctx, cfg.PIDFile)
