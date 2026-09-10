@@ -26,11 +26,16 @@ func NewDeviceFlowParser(callback func(DeviceFlow) error) *DeviceFlowParser {
 }
 
 // deviceURLs is shared with log redaction: every URL accepted by the parser
-// must also be treated as a credential by the logger.
+// must also be treated as a credential by the logger. Candidates are ordered
+// by evidence: an embedded code, an explicit cue, then the /device fallback.
 func deviceURLs(clean string) []DeviceFlow {
-	var flows []DeviceFlow
-	for _, raw := range urlRE.FindAllString(clean, -1) {
-		raw = strings.TrimRight(raw, ".,;)]}")
+	var ranked [3][]DeviceFlow
+	previousEnd := 0
+	for _, span := range urlRE.FindAllStringIndex(clean, -1) {
+		// A cue applies only to the next URL, not every URL on the same line.
+		cued := strings.Contains(strings.ToLower(clean[previousEnd:span[0]]), "open this url")
+		previousEnd = span[1]
+		raw := strings.TrimRight(clean[span[0]:span[1]], ".,;)]}")
 		parsed, err := url.Parse(raw)
 		code := ""
 		if err == nil {
@@ -42,10 +47,19 @@ func deviceURLs(clean string) []DeviceFlow {
 				}
 			}
 		}
-		if strings.Contains(strings.ToLower(clean), "open this url") ||
-			code != "" || strings.Contains(strings.ToLower(raw), "/device") {
-			flows = append(flows, DeviceFlow{Code: code, URL: raw})
+		flow := DeviceFlow{Code: code, URL: raw}
+		switch {
+		case code != "":
+			ranked[0] = append(ranked[0], flow)
+		case cued:
+			ranked[1] = append(ranked[1], flow)
+		case strings.Contains(strings.ToLower(raw), "/device"):
+			ranked[2] = append(ranked[2], flow)
 		}
+	}
+	var flows []DeviceFlow
+	for _, candidates := range ranked {
+		flows = append(flows, candidates...)
 	}
 	return flows
 }
@@ -60,13 +74,13 @@ func (p *DeviceFlowParser) Feed(line string) {
 	if m := codeRE.FindStringSubmatch(clean); len(m) == 2 {
 		p.flow.Code = m[1]
 	}
-	for _, flow := range deviceURLs(clean) {
-		p.flow.URL = flow.URL
-		if flow.Code != "" {
-			p.flow.Code = flow.Code
-		}
-		if p.flow.Code != "" {
-			break
+	if flows := deviceURLs(clean); len(flows) > 0 {
+		// Choose before consulting a previously emitted code; that code must
+		// not cause an earlier, weaker URL candidate to win.
+		best := flows[0]
+		p.flow.URL = best.URL
+		if best.Code != "" {
+			p.flow.Code = best.Code
 		}
 	}
 	if p.flow.Code != "" && p.flow.URL != "" {
