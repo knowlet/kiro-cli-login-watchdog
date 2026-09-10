@@ -53,7 +53,9 @@ func TestMain(m *testing.M) {
 				fmt.Println("Visit https://example.test/#/device?user_code=ABCD-EFGH")
 				time.Sleep(time.Minute)
 			case "argv":
-				if len(os.Args) != 9 || os.Args[5] != os.Getenv("KCLW_EXPECT_ARG") {
+				// Identity Center intentionally omits --license pro for compatibility
+				// with the operator-verified Kiro CLI invocation.
+				if len(os.Args) != 7 || os.Args[3] != os.Getenv("KCLW_EXPECT_ARG") {
 					os.Exit(3)
 				}
 			default:
@@ -196,7 +198,7 @@ func TestParserAndRedactorRecognizeSameVariants(t *testing.T) {
 			p := NewDeviceFlowParser(func(flow DeviceFlow) error { got = flow; return nil })
 			p.Feed(line)
 			if strings.Contains(line, "Code :") {
-				p.Feed("Visit https://example.test/device")
+				p.Feed("Open this URL: https://example.test/device")
 			}
 			if got.Code != "ABCD-EFGH" {
 				t.Fatalf("flow=%+v", got)
@@ -206,6 +208,20 @@ func TestParserAndRedactorRecognizeSameVariants(t *testing.T) {
 				t.Fatalf("not redacted: %s", clean)
 			}
 		})
+	}
+}
+
+func TestWeakDeviceURLDoesNotBeatLaterStrongURL(t *testing.T) {
+	var got DeviceFlow
+	p := NewDeviceFlowParser(func(flow DeviceFlow) error { got = flow; return nil })
+	p.Feed("Help: https://example.test/device-help")
+	p.Feed("Code: ABCD-EFGH")
+	if got.URL != "" {
+		t.Fatalf("weak URL triggered early notification: %+v", got)
+	}
+	p.Feed("Open this URL: https://example.test/start/#/device?user_code=ABCD-EFGH")
+	if got.URL != "https://example.test/start/#/device?user_code=ABCD-EFGH" {
+		t.Fatalf("flow=%+v", got)
 	}
 }
 
