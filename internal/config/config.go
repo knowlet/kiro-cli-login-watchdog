@@ -116,7 +116,7 @@ func (c Config) ValidateRuntime() error {
 		return errors.New("KCLW_TELEGRAM_BOT_TOKEN and KCLW_TELEGRAM_CHAT_ID must be set together")
 	}
 	if c.TelegramBotToken == "" {
-		return errors.New("Telegram notifier is required in phase 1: set KCLW_TELEGRAM_BOT_TOKEN and KCLW_TELEGRAM_CHAT_ID")
+		return errors.New("telegram notifier is required in phase 1: set KCLW_TELEGRAM_BOT_TOKEN and KCLW_TELEGRAM_CHAT_ID")
 	}
 	return nil
 }
