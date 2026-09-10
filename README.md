@@ -4,7 +4,7 @@ A small self-managed daemon that keeps Kiro CLI authentication usable on machine
 
 The first-stage flow is deliberately simple:
 
-1. Run `kiro-cli whoami --format json` on an internal interval.
+1. Run `kiro-cli whoami` on an internal interval.
 2. If Kiro CLI is no longer authenticated, start a device-flow login.
 3. Parse the one-time device code and browser URL from Kiro CLI output.
 4. Send the code and URL to Telegram.
@@ -23,12 +23,12 @@ Device codes and device-login URLs are also treated as short-lived credentials. 
 
 | Method | `KCLW_AUTH_METHOD` | Kiro CLI invocation |
 | --- | --- | --- |
-| AWS IAM Identity Center | `identity-center` | `login --license pro --identity-provider ... --region ... --use-device-flow` |
+| AWS IAM Identity Center | `identity-center` | `login --identity-provider ... --region ... --use-device-flow` |
 | Google | `google` | `login --social google --use-device-flow` |
 | GitHub | `github` | `login --social github --use-device-flow` |
 | Builder ID | `builder-id` | `login --license free --use-device-flow` |
 
-The first-stage target is IAM Identity Center with a known `awsapps.com/start` URL. Kiro's generic **Your Organization** flow can also involve organization discovery by work email; that path is intentionally not automated until Kiro exposes a stable non-interactive selector for it.
+The first-stage target is IAM Identity Center with a known `awsapps.com/start` URL. The Identity Center command intentionally omits `--license pro` because the operator-verified Kiro CLI build fails to construct the request when that flag is combined with the explicit identity provider. Kiro's generic **Your Organization** discovery-by-email flow is intentionally left for a later phase.
 
 ## Build
 
@@ -107,7 +107,7 @@ Run in the foreground only when debugging or when a process supervisor already o
 ./kiro-cli-login-watchdog run --env-file .env
 ```
 
-The daemon writes a PID file and a private append-only log under its state directory. On Linux the default is `~/.local/state/kiro-cli-login-watchdog`; macOS and Windows use the platform user configuration directory. Paths can be overridden with `KCLW_STATE_DIR`, `KCLW_PID_FILE`, and `KCLW_LOG_FILE`.
+The daemon writes its state and private append-only log under the configured state directory. On Linux the default is `~/.local/state/kiro-cli-login-watchdog`; macOS and Windows use the platform user configuration directory. Paths can be overridden with `KCLW_STATE_DIR`, `KCLW_PID_FILE`, and `KCLW_LOG_FILE`.
 
 ## Scheduling strategy
 
@@ -148,7 +148,7 @@ kiro-cli-login-watchdog version
 | `KCLW_TELEGRAM_CHAT_ID` | - | Telegram destination chat ID |
 | `KCLW_NOTIFY_SUCCESS` | `true` | Send a second message after login is restored |
 | `KCLW_STATE_DIR` | platform default | PID/log directory |
-| `KCLW_PID_FILE` | under state dir | Override PID file |
+| `KCLW_PID_FILE` | under state dir | Override state record path |
 | `KCLW_LOG_FILE` | under state dir | Override log file |
 
 ## Design for later phases
@@ -166,8 +166,13 @@ Planned extensions:
 ## Development
 
 ```bash
+gofmt -w .
 go test ./...
+go test -race ./...
 go vet ./...
+golangci-lint run
 ```
 
-The project has no third-party Go dependencies in phase 1.
+CI runs formatting, tests, the race detector, vet, builds on Linux/macOS/Windows, and a dedicated `golangci-lint` job on Ubuntu.
+
+The project has no third-party Go runtime dependencies in phase 1.
