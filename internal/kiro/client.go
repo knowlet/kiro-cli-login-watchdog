@@ -139,7 +139,12 @@ func (c *Client) LoginArgs() []string {
 	args := []string{"login"}
 	switch c.authMethod {
 	case config.AuthIdentityCenter:
-		args = append(args, "--license", "pro", "--identity-provider", c.identityURL, "--region", c.region)
+		// Match the operator-verified Identity Center invocation exactly. Some Kiro
+		// CLI versions accept `--license pro`, but older builds can fail while
+		// constructing the request when it is combined with an explicit identity
+		// provider. The identity-provider/region pair is sufficient to select the
+		// organization flow.
+		args = append(args, "--identity-provider", c.identityURL, "--region", c.region)
 	case config.AuthGoogle:
 		args = append(args, "--social", "google")
 	case config.AuthGitHub:
