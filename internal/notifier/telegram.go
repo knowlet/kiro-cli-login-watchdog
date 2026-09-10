@@ -43,7 +43,7 @@ func (t *Telegram) Notify(ctx context.Context, message string) error {
 		}
 		return fmt.Errorf("send Telegram message: network request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if readErr != nil {
 		return fmt.Errorf("read Telegram response failed")
