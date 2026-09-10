@@ -33,7 +33,7 @@ func Acquire(path string) (*Lock, error) {
 		return nil, err
 	}
 	if err = lockFile(file); err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 	return &Lock{file: file}, nil
@@ -53,7 +53,7 @@ func ReadRecord(path string) (Record, error) {
 	if err != nil {
 		return record, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if err = json.NewDecoder(io.LimitReader(file, 4096)).Decode(&record); err != nil {
 		return Record{}, fmt.Errorf("invalid watchdog state (legacy PID-only files are not trusted)")
 	}
@@ -83,9 +83,9 @@ func writeRecord(path string, record Record) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	if _, err = file.Write(append(data, '\n')); err != nil {
-		file.Close()
+		_ = file.Close()
 		return err
 	}
 	if err = file.Close(); err != nil {
@@ -112,13 +112,13 @@ func Start(path string, cancel context.CancelFunc) (*Instance, error) {
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		lock.Close()
+		_ = lock.Close()
 		return nil, err
 	}
 	var token [32]byte
 	if _, err = rand.Read(token[:]); err != nil {
-		listener.Close()
-		lock.Close()
+		_ = listener.Close()
+		_ = lock.Close()
 		return nil, err
 	}
 	instance := &Instance{path: path, lock: lock, Record: Record{
@@ -131,8 +131,8 @@ func Start(path string, cancel context.CancelFunc) (*Instance, error) {
 		ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second, IdleTimeout: time.Second,
 		MaxHeaderBytes: 4096}
 	if err = writeRecord(path, instance.Record); err != nil {
-		listener.Close()
-		lock.Close()
+		_ = listener.Close()
+		_ = lock.Close()
 		return nil, err
 	}
 	go func() {
@@ -175,7 +175,7 @@ func (i *Instance) handler(stop bool, cancel context.CancelFunc) http.HandlerFun
 // Keep the lifetime lock through state cleanup to prevent deleting a successor.
 func (i *Instance) Close() {
 	i.once.Do(func() {
-		i.server.Close()
+		_ = i.server.Close()
 		if record, err := ReadRecord(i.path); err == nil && record.Token == i.Record.Token {
 			_ = os.Remove(i.path)
 		}
@@ -206,7 +206,7 @@ func Control(ctx context.Context, record Record, stop bool) error {
 	if err != nil {
 		return errors.New("watchdog control endpoint is unavailable")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var reply Record
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&reply) != nil ||
 		reply.PID != record.PID || reply.Address != record.Address ||
@@ -221,7 +221,9 @@ func Control(ctx context.Context, record Record, stop bool) error {
 func Status(ctx context.Context, path string) (Record, bool, error) {
 	lock, err := Acquire(path + ".lock")
 	if err == nil {
-		lock.Close()
+		if closeErr := lock.Close(); closeErr != nil {
+			return Record{}, false, fmt.Errorf("release watchdog status probe: %w", closeErr)
+		}
 		return Record{}, false, nil
 	}
 	if !errors.Is(err, ErrLocked) {
@@ -243,7 +245,9 @@ func WaitStopped(ctx context.Context, path string, record Record) error {
 	for {
 		lock, err := Acquire(path + ".lock")
 		if err == nil {
-			lock.Close()
+			if closeErr := lock.Close(); closeErr != nil {
+				return fmt.Errorf("release watchdog stop probe: %w", closeErr)
+			}
 			return nil
 		}
 		if !errors.Is(err, ErrLocked) {
