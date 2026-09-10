@@ -48,7 +48,7 @@ func TestLifetimeLockAndAuthenticatedShutdown(t *testing.T) {
 	}
 	// Cancellation alone must not release the lock; command cleanup happens first.
 	if lock, err := Acquire(path + ".lock"); err == nil {
-		lock.Close()
+		_ = lock.Close()
 		t.Fatal("lock released before cleanup")
 	}
 	instance.Close()
@@ -156,7 +156,7 @@ func TestLockedButUnverifiableStateFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if _, running, err := Status(context.Background(), path); err == nil || running {
 		t.Fatalf("status=%v err=%v", running, err)
 	}
