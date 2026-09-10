@@ -13,8 +13,17 @@ func TestLoadEnvFileDoesNotOverrideExistingEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("KCLW_TEST_A", "from-env")
-	_ = os.Unsetenv("KCLW_TEST_B")
-	defer os.Unsetenv("KCLW_TEST_B")
+	oldB, hadB := os.LookupEnv("KCLW_TEST_B")
+	if err := os.Unsetenv("KCLW_TEST_B"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadB {
+			_ = os.Setenv("KCLW_TEST_B", oldB)
+			return
+		}
+		_ = os.Unsetenv("KCLW_TEST_B")
+	})
 
 	if err := LoadEnvFile(path); err != nil {
 		t.Fatal(err)
