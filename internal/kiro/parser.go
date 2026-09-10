@@ -13,23 +13,35 @@ var (
 	urlRE  = regexp.MustCompile(`https?://[^\s]+`)
 )
 
-type DeviceFlowParser struct {
-	mu       sync.Mutex
+const (
+	deviceURLWeak = iota + 1
+	deviceURLCued
+	deviceURLWithCode
+)
+
+type deviceURLCandidate struct {
 	flow     DeviceFlow
-	sent     bool
-	callback func(DeviceFlow) error
-	err      error
+	strength int
+}
+
+type DeviceFlowParser struct {
+	mu          sync.Mutex
+	flow        DeviceFlow
+	urlStrength int
+	sent        bool
+	callback    func(DeviceFlow) error
+	err         error
 }
 
 func NewDeviceFlowParser(callback func(DeviceFlow) error) *DeviceFlowParser {
 	return &DeviceFlowParser{callback: callback}
 }
 
-// deviceURLs is shared with log redaction: every URL accepted by the parser
-// must also be treated as a credential by the logger. Candidates are ordered
-// by evidence: an embedded code, an explicit cue, then the /device fallback.
-func deviceURLs(clean string) []DeviceFlow {
-	var ranked [3][]DeviceFlow
+// deviceURLCandidates is shared with log redaction: every URL accepted by the
+// parser must also be treated as a credential by the logger. Candidates are
+// ordered by evidence: an embedded code, an explicit cue, then /device fallback.
+func deviceURLCandidates(clean string) []deviceURLCandidate {
+	var ranked [3][]deviceURLCandidate
 	previousEnd := 0
 	for _, span := range urlRE.FindAllStringIndex(clean, -1) {
 		// A cue applies only to the next URL, not every URL on the same line.
@@ -47,19 +59,31 @@ func deviceURLs(clean string) []DeviceFlow {
 				}
 			}
 		}
-		flow := DeviceFlow{Code: code, URL: raw}
+		candidate := deviceURLCandidate{flow: DeviceFlow{Code: code, URL: raw}}
 		switch {
 		case code != "":
-			ranked[0] = append(ranked[0], flow)
+			candidate.strength = deviceURLWithCode
+			ranked[0] = append(ranked[0], candidate)
 		case cued:
-			ranked[1] = append(ranked[1], flow)
+			candidate.strength = deviceURLCued
+			ranked[1] = append(ranked[1], candidate)
 		case strings.Contains(strings.ToLower(raw), "/device"):
-			ranked[2] = append(ranked[2], flow)
+			candidate.strength = deviceURLWeak
+			ranked[2] = append(ranked[2], candidate)
 		}
 	}
-	var flows []DeviceFlow
-	for _, candidates := range ranked {
-		flows = append(flows, candidates...)
+	var candidates []deviceURLCandidate
+	for _, group := range ranked {
+		candidates = append(candidates, group...)
+	}
+	return candidates
+}
+
+func deviceURLs(clean string) []DeviceFlow {
+	candidates := deviceURLCandidates(clean)
+	flows := make([]DeviceFlow, 0, len(candidates))
+	for _, candidate := range candidates {
+		flows = append(flows, candidate.flow)
 	}
 	return flows
 }
@@ -74,24 +98,46 @@ func (p *DeviceFlowParser) Feed(line string) {
 	if m := codeRE.FindStringSubmatch(clean); len(m) == 2 {
 		p.flow.Code = m[1]
 	}
-	if flows := deviceURLs(clean); len(flows) > 0 {
-		// Choose before consulting a previously emitted code; that code must
-		// not cause an earlier, weaker URL candidate to win.
-		best := flows[0]
-		p.flow.URL = best.URL
-		if best.Code != "" {
-			p.flow.Code = best.Code
+	if candidates := deviceURLCandidates(clean); len(candidates) > 0 {
+		best := candidates[0]
+		if best.strength > p.urlStrength {
+			p.flow.URL = best.flow.URL
+			p.urlStrength = best.strength
+		}
+		if best.flow.Code != "" {
+			p.flow.Code = best.flow.Code
 		}
 	}
-	if p.flow.Code != "" && p.flow.URL != "" {
-		if p.callback != nil {
-			if err := p.callback(p.flow); err != nil {
-				p.err = fmt.Errorf("device-flow callback: %w", err)
-				return
-			}
-		}
-		p.sent = true
+	// A weak /device heuristic is useful for final fallback and redaction, but
+	// must not trigger a notification while stronger URL evidence may still
+	// arrive on a later line.
+	if p.urlStrength >= deviceURLCued {
+		p.emitLocked()
 	}
+}
+
+// Finalize is called after both login output streams are drained. Only then is
+// a weak /device-only URL allowed to act as a fallback.
+func (p *DeviceFlowParser) Finalize() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sent || p.err != nil {
+		return
+	}
+	p.emitLocked()
+}
+
+func (p *DeviceFlowParser) emitLocked() {
+	if p.flow.Code == "" || p.flow.URL == "" {
+		return
+	}
+	if p.callback != nil {
+		if err := p.callback(p.flow); err != nil {
+			p.err = fmt.Errorf("device-flow callback: %w", err)
+			return
+		}
+	}
+	p.sent = true
 }
 
 func (p *DeviceFlowParser) Err() error {
