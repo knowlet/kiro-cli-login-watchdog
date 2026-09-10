@@ -43,3 +43,17 @@ func TestLoginArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestIsLoggedOut(t *testing.T) {
+	for _, output := range []string{
+		"Not logged in",
+		"Not logged in.",
+		"You are not logged in",
+		"Error: Not logged in",
+		`{"error":"Not logged in"}`,
+	} {
+		if !isLoggedOut(output) {
+			t.Errorf("isLoggedOut(%q) = false, want true", output)
+		}
+	}
+}
