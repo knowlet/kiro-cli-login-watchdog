@@ -49,7 +49,10 @@ func (c *Client) command(ctx context.Context, args ...string) *exec.Cmd {
 func (c *Client) WhoAmI(ctx context.Context) (bool, string, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
 	defer cancel()
-	out, err := c.command(commandCtx, "whoami", "--format", "json").CombinedOutput()
+	// Keep the health check compatible with Kiro CLI versions that do not support
+	// `whoami --format json`. We only need the exit status plus the explicit
+	// logged-out diagnostic; structured output is unnecessary here.
+	out, err := c.command(commandCtx, "whoami").CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if commandCtx.Err() != nil {
 		return false, output, fmt.Errorf("kiro-cli whoami interrupted: %w", commandCtx.Err())
