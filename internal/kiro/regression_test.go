@@ -24,16 +24,16 @@ func TestMain(m *testing.M) {
 		case "whoami", "logout":
 			switch os.Getenv("KCLW_KIRO_CASE") {
 			case "logged-out":
-				fmt.Fprintln(os.Stderr, "error: Not logged in")
+				_, _ = fmt.Fprintln(os.Stderr, "error: Not logged in")
 				os.Exit(1)
 			case "json-logged-out":
-				fmt.Fprintln(os.Stderr, `{"error":"Not logged in"}`)
+				_, _ = fmt.Fprintln(os.Stderr, `{"error":"Not logged in"}`)
 				os.Exit(1)
 			case "service":
-				fmt.Fprintln(os.Stderr, "service unavailable")
+				_, _ = fmt.Fprintln(os.Stderr, "service unavailable")
 				os.Exit(1)
 			case "flags":
-				fmt.Fprintln(os.Stderr, "unexpected argument '--format'")
+				_, _ = fmt.Fprintln(os.Stderr, "unexpected argument '--format'")
 				os.Exit(2)
 			case "empty":
 				os.Exit(1)
@@ -41,13 +41,13 @@ func TestMain(m *testing.M) {
 				time.Sleep(time.Minute)
 				os.Exit(0)
 			default:
-				fmt.Fprintln(os.Stdout, `{"authenticated":true}`)
+				_, _ = fmt.Fprintln(os.Stdout, `{"authenticated":true}`)
 				os.Exit(0)
 			}
 		case "login":
 			switch os.Getenv("KCLW_KIRO_CASE") {
 			case "long":
-				fmt.Print(strings.Repeat("x", maxLoginLine+1))
+				_, _ = fmt.Print(strings.Repeat("x", maxLoginLine+1))
 				time.Sleep(time.Minute)
 			case "wait":
 				fmt.Println("Visit https://example.test/#/device?user_code=ABCD-EFGH")
@@ -61,8 +61,8 @@ func TestMain(m *testing.M) {
 			default:
 				// Exit immediately after emitting both streams, with an unterminated
 				// final line: the former Wait-before-scanners implementation lost data.
-				fmt.Fprintln(os.Stderr, "Code : ABCD-EFGH")
-				fmt.Fprint(os.Stdout, "Visit https://example.test/#/device?user_code=ABCD-EFGH")
+				_, _ = fmt.Fprintln(os.Stderr, "Code : ABCD-EFGH")
+				_, _ = fmt.Fprint(os.Stdout, "Visit https://example.test/#/device?user_code=ABCD-EFGH")
 			}
 			os.Exit(0)
 		}
