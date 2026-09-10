@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 		switch os.Args[1] {
 		case "whoami":
 			if os.Getenv("KCLW_MAIN_CASE") == "login-hang" {
-				fmt.Fprintln(os.Stderr, "Not logged in")
+				_, _ = fmt.Fprintln(os.Stderr, "Not logged in")
 				os.Exit(1)
 			}
 			fmt.Println(`{"authenticated":true}`)
@@ -34,15 +34,16 @@ func TestMain(m *testing.M) {
 				os.Exit(2)
 			}
 			if os.WriteFile(os.Getenv("KCLW_CHILD_MARKER"), []byte(listener.Addr().String()), 0o600) != nil {
+				_ = listener.Close()
 				os.Exit(2)
 			}
-			defer listener.Close()
+			defer func() { _ = listener.Close() }()
 			for {
 				time.Sleep(time.Second)
 			}
 		default:
 			if err := run(os.Args[1:]); err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				_, _ = fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 			os.Exit(0)
@@ -168,10 +169,10 @@ func TestStopReapsActiveLoginChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login child not active: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 	requireCommand(t, exe, "stop")
 	if conn, err = net.DialTimeout("tcp", address, 200*time.Millisecond); err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("login child survived stop")
 	}
 }
