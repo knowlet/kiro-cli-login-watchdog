@@ -46,6 +46,14 @@ func TestMain(m *testing.M) {
 			}
 		case "login":
 			switch os.Getenv("KCLW_KIRO_CASE") {
+			case "weak-wait", "weak-then-strong":
+				_, _ = fmt.Fprintln(os.Stdout, "Code: ABCD-EFGH")
+				_, _ = fmt.Fprintln(os.Stderr, "Visit https://example.test/device")
+				if os.Getenv("KCLW_KIRO_CASE") == "weak-then-strong" {
+					time.Sleep(50 * time.Millisecond)
+					_, _ = fmt.Fprintln(os.Stdout, "Open this URL: https://example.test/activate?user_code=IJKL-MNOP")
+				}
+				time.Sleep(time.Minute)
 			case "long":
 				_, _ = fmt.Print(strings.Repeat("x", maxLoginLine+1))
 				time.Sleep(time.Minute)

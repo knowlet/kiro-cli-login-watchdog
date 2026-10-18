@@ -31,10 +31,11 @@ type DeviceFlowParser struct {
 	sent        bool
 	callback    func(DeviceFlow) error
 	err         error
+	weakReady   chan struct{}
 }
 
 func NewDeviceFlowParser(callback func(DeviceFlow) error) *DeviceFlowParser {
-	return &DeviceFlowParser{callback: callback}
+	return &DeviceFlowParser{callback: callback, weakReady: make(chan struct{}, 1)}
 }
 
 // deviceURLCandidates is shared with log redaction: every URL accepted by the
@@ -108,16 +109,20 @@ func (p *DeviceFlowParser) Feed(line string) {
 			p.flow.Code = best.flow.Code
 		}
 	}
-	// A weak /device heuristic is useful for final fallback and redaction, but
-	// must not trigger a notification while stronger URL evidence may still
-	// arrive on a later line.
+	// Give stronger evidence on subsequent lines a chance to replace a weak
+	// candidate. Login bounds this wait once both a URL and code are available.
 	if p.urlStrength >= deviceURLCued {
 		p.emitLocked()
+	} else if p.flow.Code != "" && p.flow.URL != "" {
+		select {
+		case p.weakReady <- struct{}{}:
+		default:
+		}
 	}
 }
 
-// Finalize is called after both login output streams are drained. Only then is
-// a weak /device-only URL allowed to act as a fallback.
+// Finalize allows a complete weak candidate to act as a fallback after Login's
+// grace period or after both output streams are drained. It remains once-only.
 func (p *DeviceFlowParser) Finalize() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
