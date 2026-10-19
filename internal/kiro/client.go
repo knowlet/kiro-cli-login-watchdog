@@ -100,6 +100,11 @@ func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error)
 	loginCtx, cancel := context.WithTimeout(ctx, c.loginTimeout)
 	defer cancel()
 	parser := NewDeviceFlowParser(func(flow DeviceFlow) error {
+		// Output may still drain after cancellation. Never send a newly parsed
+		// prompt once the attempt has already expired or been stopped.
+		if loginCtx.Err() != nil {
+			return nil
+		}
 		if onDeviceFlow != nil {
 			if err := onDeviceFlow(flow); err != nil {
 				cancel()
@@ -114,10 +119,15 @@ func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error)
 	// With Writer outputs, os/exec owns the reader goroutines and Wait drains
 	// both streams before returning. No StdoutPipe/Wait close-before-read race.
 	cmd.Stdout, cmd.Stderr = stdout, stderr
+	stopFallback := startDeviceFlowFallback(loginCtx, parser)
 	waitErr := cmd.Run()
+	// Join the waiter before reading parser errors or returning to the caller.
+	stopFallback()
 	stdout.flush()
 	stderr.flush()
-	parser.Finalize()
+	if loginCtx.Err() == nil {
+		parser.Finalize()
+	}
 	if err := parser.Err(); err != nil {
 		return err
 	}
@@ -134,6 +144,38 @@ func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error)
 		return fmt.Errorf("kiro-cli login failed: %w", waitErr)
 	}
 	return nil
+}
+
+// The fixed window starts with the first complete weak candidate. It is not
+// reset by output chatter: a CLI waiting for the user must receive a prompt.
+// Stronger candidates arriving within the window still take precedence.
+const weakDeviceURLGrace = 500 * time.Millisecond
+
+func startDeviceFlowFallback(ctx context.Context, parser *DeviceFlowParser) func() {
+	fallbackCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-fallbackCtx.Done():
+			return
+		case <-parser.weakReady:
+		}
+		timer := time.NewTimer(weakDeviceURLGrace)
+		defer timer.Stop()
+		select {
+		case <-fallbackCtx.Done():
+			return
+		case <-timer.C:
+			if fallbackCtx.Err() == nil {
+				parser.Finalize()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (c *Client) LoginArgs() []string {

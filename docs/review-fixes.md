@@ -71,6 +71,15 @@ prefixes, and multiple URLs on a line. Credential-bearing lines are not logged.
 `os/exec` owns stdout/stderr drain goroutines; final unterminated output is processed
 before returning. Excessively long lines fail safely rather than hanging the login.
 
+A complete weak `/device` URL plus separate code receives a fixed 500 ms grace
+period while the login child is running. An explicit cue or embedded `user_code`
+seen during that window takes precedence. If no stronger candidate arrives, the
+weak fallback notifies once so the user can unblock the waiting child. Output
+chatter does not extend the window; stronger output arriving after delivery cannot
+replace the notification. This deliberately bounds delivery rather than promising
+to wait for arbitrary future output. The waiter is canceled and joined when the
+child exits, and interrupted attempts never finalize a stale prompt.
+
 Telegram failures report sanitized errors and numeric HTTP status, never untrusted
 response bodies, response status text, or a request URL containing the bot token.
 

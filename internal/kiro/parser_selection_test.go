@@ -32,8 +32,8 @@ func TestDeviceFlowURLSelectionWithEarlierCode(t *testing.T) {
 			})
 			p.Feed("Code: " + code)
 			p.Feed(tt.line)
-			// End-of-output finalization is when a weak /device-only candidate is
-			// allowed to become the fallback. Strong candidates already emitted.
+			// Explicit finalization allows the weak fallback. During a live login,
+			// the grace-period waiter also does this; strong candidates emit early.
 			p.Finalize()
 			if got.URL != tt.wantURL || got.Code != code || calls != 1 {
 				t.Fatalf("flow=%+v calls=%d; want URL=%s code=%s once", got, calls, tt.wantURL, code)
