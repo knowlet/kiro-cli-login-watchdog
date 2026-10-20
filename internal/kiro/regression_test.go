@@ -46,6 +46,16 @@ func TestMain(m *testing.M) {
 			}
 		case "login":
 			switch os.Getenv("KCLW_KIRO_CASE") {
+			case "delimited-wait", "delimited-stderr", "newline-wait":
+				out := os.Stdout
+				if os.Getenv("KCLW_KIRO_CASE") == "delimited-stderr" {
+					out = os.Stderr
+				}
+				_, _ = fmt.Fprint(out, "Code: ABCD-EFGH; Open this URL: https://example.test/activate?user_code=ABCD-EFGH ")
+				if os.Getenv("KCLW_KIRO_CASE") == "newline-wait" {
+					fmt.Println()
+				}
+				time.Sleep(time.Minute)
 			case "weak-wait", "weak-then-strong":
 				_, _ = fmt.Fprintln(os.Stdout, "Code: ABCD-EFGH")
 				_, _ = fmt.Fprintln(os.Stderr, "Visit https://example.test/device")

@@ -229,6 +229,27 @@ func (w *loginOutput) Write(data []byte) (int, error) {
 		if complete {
 			w.flush()
 			data = data[1:]
+		} else {
+			// A waiting CLI may omit the newline. Only feed the prefix ending
+			// at an actual whitespace delimiter; a write boundary cannot prove
+			// that a URL path, query, or code is complete. Keep the full line
+			// for cue context and eventual redacted logging, without logging
+			// any partial buffer. Refeeding is safe: the parser emits once.
+			clean := ansiRE.ReplaceAll(w.pending, nil)
+			// An unfinished escape sequence may itself contain spaces. Do
+			// not mistake those for a token delimiter while it is arriving.
+			if !bytes.ContainsRune(clean, '\x1b') {
+				if end := bytes.LastIndexAny(clean, " \t\r\f"); end >= 0 {
+					prefix := string(clean[:end+1])
+					// Lower-ranked URLs must wait: a later token on this
+					// same line may supply the stronger, code-bearing URL.
+					// The first highest-ranked candidate cannot be displaced.
+					candidates := deviceURLCandidates(prefix)
+					if len(candidates) > 0 && candidates[0].strength == deviceURLWithCode {
+						w.parser.Feed(prefix)
+					}
+				}
+			}
 		}
 	}
 	return total, nil

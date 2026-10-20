@@ -107,3 +107,38 @@ control, redirect/non-loopback rejection, stopping a live login child, pipe drai
 fragment URLs, redaction variants, non-authentication errors, callback cancellation,
 output limits, and Telegram error reflection. Cross-building is not a substitute
 for native runtime tests; the CI matrix runs the same tests on Linux/macOS/Windows.
+
+## Delimiter-terminated code-bearing URLs without a newline
+
+`loginOutput.Write` now parses a whitespace-terminated prefix of an unfinished
+line only when it includes a URL carrying `user_code`, the parser's highest
+rank. It retains the full buffered line for cue context and eventual redacted
+logging. Write boundaries alone never prove a token is complete: URL paths,
+query keys/values, and codes can span arbitrary writes without latching a
+truncated candidate at the same strength. Partial buffers are not logged.
+Complete ANSI sequences are removed before finding delimiters; unrecognized or
+incomplete escapes defer incremental parsing.
+
+Lower-ranked cued and weak URLs, and code-only prefixes, are not fed early: a
+later URL on the same logical line may supply stronger evidence. This preserves
+the whole-line parser's choice of the first highest-ranked URL. A naive feed of
+every delimited prefix would introduce fragmentation-dependent routing.
+
+The change intentionally covers code-bearing URL tokens terminated by space,
+tab, carriage return, or form feed (newline already flushes normally). A bare
+final URL without a delimiter remains ambiguous and waits for newline or process
+exit. Separate-code plus generic/cued/weak URL prompts without a newline also
+remain buffered until newline or process exit, even when whitespace-delimited.
+There is no new timeout heuristic. This does not fully resolve all no-newline
+interactive prompts. Existing parser ranking, URL recognition, weak-candidate
+grace for flushed lines, line limit, and final flush semantics remain unchanged.
+
+Regression coverage uses synthetic local fake children, without authentication
+or network calls: newline baseline versus code-bearing no-newline stdout/stderr
+prompts; every two-write split and bytewise splits of path/query/user_code/code;
+same-line lower-ranked then strongest URL ranking; lower-ranked prompt deferral;
+callback failure; exactly-once final flush; no partial-buffer logging; bare-token
+deferral; split ANSI sequences; all supported whitespace delimiters. Baseline
+d1562f7 times out with zero callbacks for the code-bearing delimited no-newline
+fixture while its newline control succeeds. These fixtures do not establish
+which prompt framing any real Kiro CLI release currently emits.
