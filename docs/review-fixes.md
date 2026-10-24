@@ -142,3 +142,20 @@ deferral; split ANSI sequences; all supported whitespace delimiters. Baseline
 d1562f7 times out with zero callbacks for the code-bearing delimited no-newline
 fixture while its newline control succeeds. These fixtures do not establish
 which prompt framing any real Kiro CLI release currently emits.
+
+### Linear work for fragmented output
+
+The unfinished-line scanner now consumes only newly appended bytes and retains
+its token/CSI state across writes. Each completed token is inspected once;
+unsupported escapes defer incremental delivery until the existing line flush.
+Once delivery succeeds or its callback fails, incremental scanning stops. The
+full bounded line is still retained for the existing final parsing and redacted
+logging; no URL or line is silently truncated.
+
+Allocation regressions cover 16 KiB bytewise output both before and after flow
+emission. Restoring the previous scanner makes both fail (over 32,000 and 245,000
+allocations respectively); the incremental scanner stays below the deliberately
+loose 512-allocation bound. A long line with many delimiters verifies the later
+URL is delivered exactly once, partial buffers are not logged, and flushing
+redacts the synthetic URL/code. A bytewise-size benchmark is included for
+reproducible scaling checks; no wall-clock threshold gates CI.

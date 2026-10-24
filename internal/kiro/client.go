@@ -203,11 +203,14 @@ const maxLoginLine = 1024 * 1024
 // Each stream has one Writer; os/exec joins both copying goroutines before
 // Login inspects err or flushes a final line without a newline.
 type loginOutput struct {
-	client  *Client
-	parser  *DeviceFlowParser
-	cancel  context.CancelFunc
-	pending []byte
-	err     error
+	client             *Client
+	parser             *DeviceFlowParser
+	cancel             context.CancelFunc
+	pending            []byte
+	token              []byte
+	ansiState          uint8
+	incrementalBlocked bool
+	err                error
 }
 
 func (w *loginOutput) Write(data []byte) (int, error) {
@@ -224,38 +227,74 @@ func (w *loginOutput) Write(data []byte) (int, error) {
 			w.cancel()
 			return total - len(data), w.err
 		}
-		w.pending = append(w.pending, data[:n]...)
+		chunk := data[:n]
+		w.pending = append(w.pending, chunk...)
 		data = data[n:]
 		if complete {
 			w.flush()
 			data = data[1:]
 		} else {
-			// A waiting CLI may omit the newline. Only feed the prefix ending
-			// at an actual whitespace delimiter; a write boundary cannot prove
-			// that a URL path, query, or code is complete. Keep the full line
-			// for cue context and eventual redacted logging, without logging
-			// any partial buffer. Refeeding is safe: the parser emits once.
-			clean := ansiRE.ReplaceAll(w.pending, nil)
-			// An unfinished escape sequence may itself contain spaces. Do
-			// not mistake those for a token delimiter while it is arriving.
-			if !bytes.ContainsRune(clean, '\x1b') {
-				if end := bytes.LastIndexAny(clean, " \t\r\f"); end >= 0 {
-					prefix := string(clean[:end+1])
-					// Lower-ranked URLs must wait: a later token on this
-					// same line may supply the stronger, code-bearing URL.
-					// The first highest-ranked candidate cannot be displaced.
-					candidates := deviceURLCandidates(prefix)
-					if len(candidates) > 0 && candidates[0].strength == deviceURLWithCode {
-						w.parser.Feed(prefix)
-					}
-				}
-			}
+			w.feedDelimited(chunk)
 		}
 	}
 	return total, nil
 }
 
+// feedDelimited scans only new bytes, retaining token/ANSI state across writes.
+// Only code-bearing URLs can be emitted before line end, so cue context is not
+// needed here. Lower-ranked candidates remain buffered for the whole-line parser.
+func (w *loginOutput) feedDelimited(data []byte) {
+	if w.incrementalBlocked || w.parser.complete() {
+		return
+	}
+	for _, ch := range data {
+		switch w.ansiState {
+		case 1: // ESC must start a supported CSI sequence.
+			if ch != '[' {
+				w.incrementalBlocked = true
+				return
+			}
+			w.ansiState = 2
+			continue
+		case 2, 3: // CSI parameters, followed by optional intermediates.
+			if w.ansiState == 2 && (ch >= '0' && ch <= '9' || ch == ';' || ch == '?') {
+				continue
+			}
+			if ch >= ' ' && ch <= '/' {
+				w.ansiState = 3
+				continue
+			}
+			if ch >= '@' && ch <= '~' {
+				w.ansiState = 0
+				continue
+			}
+			w.incrementalBlocked = true
+			return
+		}
+		if ch == '\x1b' {
+			w.ansiState = 1
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\f' {
+			token := string(w.token)
+			w.token = w.token[:0]
+			candidates := deviceURLCandidates(token)
+			if len(candidates) > 0 && candidates[0].strength == deviceURLWithCode {
+				w.parser.Feed(token)
+				if w.parser.complete() {
+					return
+				}
+			}
+			continue
+		}
+		w.token = append(w.token, ch)
+	}
+}
+
 func (w *loginOutput) flush() {
+	w.token = w.token[:0]
+	w.ansiState = 0
+	w.incrementalBlocked = false
 	if len(w.pending) == 0 {
 		return
 	}
