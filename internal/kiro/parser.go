@@ -150,3 +150,10 @@ func (p *DeviceFlowParser) Err() error {
 	defer p.mu.Unlock()
 	return p.err
 }
+
+// complete avoids rescanning output after a once-only delivery or callback error.
+func (p *DeviceFlowParser) complete() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sent || p.err != nil
+}
