@@ -17,11 +17,12 @@ type KiroClient interface {
 	Login(context.Context, func(kiro.DeviceFlow) error) error
 }
 type Watchdog struct {
-	cfg         config.Config
-	kiro        KiroClient
-	notifier    notifier.Notifier
-	logger      *log.Logger
-	lastRelogin time.Time
+	cfg                      config.Config
+	kiro                     KiroClient
+	notifier                 notifier.Notifier
+	logger                   *log.Logger
+	lastRelogin              time.Time
+	loginPendingVerification bool
 }
 
 func New(cfg config.Config, client KiroClient, n notifier.Notifier, logger *log.Logger) *Watchdog {
@@ -55,6 +56,12 @@ func (w *Watchdog) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if w.loginPendingVerification {
+		if loggedIn {
+			return w.loginRestored(ctx)
+		}
+		w.loginPendingVerification = false
+	}
 	force := loggedIn && w.cfg.ForceReloginInterval > 0 && !w.lastRelogin.IsZero() && time.Since(w.lastRelogin) >= w.cfg.ForceReloginInterval
 	if loggedIn && !force {
 		w.logger.Printf("%s authentication is healthy", w.cfg.DisplayName())
@@ -84,11 +91,19 @@ func (w *Watchdog) Check(ctx context.Context) error {
 	}
 	loggedIn, _, verifyErr := w.kiro.WhoAmI(ctx)
 	if verifyErr != nil {
+		// Retry verification before forcing another destructive logout. A
+		// successful login command alone must not reset the re-login interval.
+		w.loginPendingVerification = true
 		return fmt.Errorf("verify login: %w", verifyErr)
 	}
 	if !loggedIn {
 		return fmt.Errorf("%s login command returned successfully but whoami is still unauthenticated", w.cfg.DisplayName())
 	}
+	return w.loginRestored(ctx)
+}
+
+func (w *Watchdog) loginRestored(ctx context.Context) error {
+	w.loginPendingVerification = false
 	w.lastRelogin = time.Now()
 	w.logger.Printf("%s login restored", w.cfg.DisplayName())
 	if w.cfg.NotifySuccess {
