@@ -21,6 +21,28 @@ Device codes and device-login URLs are also treated as short-lived credentials. 
 
 ## Authentication backends
 
+**KiroCrew version requirement:** the stable **v0.10.0** release does **not**
+provide `kas login`, `kas whoami`, or `kas logout`; it only provides `kas install`,
+`kas status`, and `kas remove`. The auth verbs were added to upstream `main` by
+[commit d199f301 / PR #23657](https://github.com/kirodotdev/KiroCrew/commit/d199f301a1c2708cd0896a4a3e6b537ec8b8035b)
+on 2026-10-26, after v0.10.0 was published. This watchdog's KAS backend requires a
+build containing that change; **it does not provide automated vault login for
+v0.10.0**. On that release, use the KiroCrew dashboard's Sign in UI. Do not switch
+to the independent kiro-cli store as a workaround for a vault-owned KAS session.
+
+Check the **same executable** configured in `KCLW_KIROCREW_BIN`:
+
+```bash
+kirocrew kas --help
+```
+
+Its subcommand choices must include all of `login`, `whoami`, and `logout`.
+`once`, `run`, and `start` now check this before touching daemon state or invoking
+an authentication command. Missing commands produce an actionable error and no
+backend fallback. The check is capability-based, not version-number-based, since
+development builds may share a version label with a stable release. It does not
+prove live account login or network availability.
+
 `KCLW_BACKEND=kiro-cli` (the default) retains the original behavior and uses `KCLW_KIRO_BIN`. `KCLW_BACKEND=kas` uses `KCLW_KIROCREW_BIN` and runs `kirocrew kas whoami`, `kirocrew kas login ...`, and `kirocrew kas logout`. No backend is auto-detected, and a failed KAS command never falls back to kiro-cli.
 
 KAS is the agent engine; **KiroCrew owns its vault authentication**. Do not point the watchdog at `kiro-agent` or put `kirocrew kas` in an executable setting. The executable path is a single argv element, so paths containing spaces work. The watchdog does not read, copy, or modify tokens or vault files itself.
@@ -207,3 +229,4 @@ golangci-lint run
 CI runs formatting, tests, the race detector, vet, builds on Linux/macOS/Windows, and a dedicated `golangci-lint` job on Ubuntu.
 
 The project has no third-party Go runtime dependencies in phase 1.
+

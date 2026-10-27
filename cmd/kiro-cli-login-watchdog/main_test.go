@@ -24,6 +24,22 @@ func TestMain(m *testing.M) {
 			action = os.Args[2]
 		}
 		switch action {
+		case "--help":
+			if !kas || len(os.Args) != 3 {
+				os.Exit(2)
+			}
+			switch os.Getenv("KCLW_MAIN_CASE") {
+			case "kas-unsupported":
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove} ...")
+			case "kas-help-error":
+				fmt.Fprintln(os.Stderr, "private-help-diagnostic")
+				os.Exit(2)
+			case "kas-help-wait":
+				time.Sleep(time.Minute)
+			default:
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
+			}
+			os.Exit(0)
 		case "whoami":
 			if os.Getenv("KCLW_MAIN_CASE") == "login-hang" {
 				message := "Not logged in"

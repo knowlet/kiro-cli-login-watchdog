@@ -72,6 +72,13 @@ func run(args []string) error {
 			} else {
 				cfg.KiroBin = resolved
 			}
+			// Fail before starting a daemon or touching either credential store.
+			probeCtx, cancel := signalContext()
+			probeErr := kiro.New(cfg, nil).CheckCapabilities(probeCtx)
+			cancel()
+			if probeErr != nil {
+				return probeErr
+			}
 		}
 		switch command {
 		case "run":

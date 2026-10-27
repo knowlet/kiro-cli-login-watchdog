@@ -1,0 +1,18 @@
+usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...
+
+positional arguments:
+  {install,status,remove,login,whoami,logout,route}
+    install             Download this release's pinned KAS engine + Node
+                        runtime
+    status              Show the pinned engine, what is installed, and the
+                        route
+    remove              Delete installed engine versions
+    login               Sign Kiro Crew's own vault in with a device code (no
+                        browser needed here)
+    whoami              Show which Kiro identity the vault is signed in as
+    logout              Remove every Kiro identity from Kiro Crew's vault
+    route               Print which program owns the Kiro sign-in here: kas-
+                        bundle or kiro-cli
+
+options:
+  -h, --help            show this help message and exit
