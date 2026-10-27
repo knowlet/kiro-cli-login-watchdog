@@ -21,6 +21,7 @@ type DeviceFlow struct {
 }
 
 type Client struct {
+	backend        string
 	bin            string
 	authMethod     string
 	identityURL    string
@@ -31,19 +32,40 @@ type Client struct {
 }
 
 func New(cfg config.Config, logger *log.Logger) *Client {
-	return &Client{bin: cfg.KiroBin, authMethod: cfg.AuthMethod,
+	bin, _ := cfg.Executable()
+	return &Client{backend: cfg.Backend, bin: bin, authMethod: cfg.AuthMethod,
 		identityURL: cfg.IdentityProvider, region: cfg.Region,
 		commandTimeout: cfg.CommandTimeout, loginTimeout: cfg.LoginTimeout, logger: logger}
 }
 
 // command deliberately uses argv, never a shell. bin is trusted local operator
-// configuration (KCLW_KIRO_BIN), not CLI output or notification input. Do not
-// split it on spaces: an executable path may legitimately contain spaces.
+// configuration (KCLW_KIRO_BIN / KCLW_KIROCREW_BIN), not CLI output or
+// notification input. Do not split it on spaces: a path can contain spaces.
 func (c *Client) command(ctx context.Context, args ...string) *exec.Cmd {
+	if c.backend == config.BackendKAS {
+		args = append([]string{"kas"}, args...)
+	}
 	cmd := exec.CommandContext(ctx, c.bin, args...)
 	// Bound waiting on descriptors inherited by a misbehaving descendant.
 	cmd.WaitDelay = 2 * time.Second
 	return cmd
+}
+
+func (c *Client) commandName() string {
+	if c.backend == config.BackendKAS {
+		return "kirocrew kas"
+	}
+	return "kiro-cli"
+}
+
+func (c *Client) loggedOut(output string, exitCode int) bool {
+	if c.backend == config.BackendKAS {
+		// KiroCrew also uses exit 1 for Python crashes. Only its complete,
+		// measured signed-out diagnostic is evidence that a login is needed.
+		clean := strings.TrimSpace(ansiRE.ReplaceAllString(output, ""))
+		return exitCode == 1 && clean == "Not signed in to Kiro Crew."
+	}
+	return exitCode > 0 && isLoggedOut(output)
 }
 
 func (c *Client) WhoAmI(ctx context.Context) (bool, string, error) {
@@ -55,7 +77,7 @@ func (c *Client) WhoAmI(ctx context.Context) (bool, string, error) {
 	out, err := c.command(commandCtx, "whoami").CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if commandCtx.Err() != nil {
-		return false, output, fmt.Errorf("kiro-cli whoami interrupted: %w", commandCtx.Err())
+		return false, output, fmt.Errorf("%s whoami interrupted: %w", c.commandName(), commandCtx.Err())
 	}
 	if err == nil {
 		return true, output, nil
@@ -64,10 +86,10 @@ func (c *Client) WhoAmI(ctx context.Context) (bool, string, error) {
 	// explicit logged-out diagnostics; flags, service, spawn and signal failures
 	// must not start an interactive login. Do not log raw command output here.
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 && isLoggedOut(output) {
+	if errors.As(err, &exitErr) && c.loggedOut(output, exitErr.ExitCode()) {
 		return false, output, nil
 	}
-	return false, output, fmt.Errorf("kiro-cli whoami failed: %w", err)
+	return false, output, fmt.Errorf("%s whoami failed: %w", c.commandName(), err)
 }
 
 var loggedOutRE = regexp.MustCompile("(?i)^(?:error:\\s*)?(?:you are )?not logged in[.!]?(?:\\s+(?:please (?:log in with|run)|run) `?kiro-cli login`?\\.?)?$")
@@ -88,10 +110,10 @@ func (c *Client) Logout(ctx context.Context) error {
 	defer cancel()
 	_, err := c.command(commandCtx, "logout").CombinedOutput()
 	if commandCtx.Err() != nil {
-		return fmt.Errorf("kiro-cli logout interrupted: %w", commandCtx.Err())
+		return fmt.Errorf("%s logout interrupted: %w", c.commandName(), commandCtx.Err())
 	}
 	if err != nil {
-		return fmt.Errorf("kiro-cli logout: %w", err)
+		return fmt.Errorf("%s logout: %w", c.commandName(), err)
 	}
 	return nil
 }
@@ -138,10 +160,10 @@ func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error)
 		return stderr.err
 	}
 	if loginCtx.Err() != nil {
-		return fmt.Errorf("kiro-cli login interrupted: %w", loginCtx.Err())
+		return fmt.Errorf("%s login interrupted: %w", c.commandName(), loginCtx.Err())
 	}
 	if waitErr != nil {
-		return fmt.Errorf("kiro-cli login failed: %w", waitErr)
+		return fmt.Errorf("%s login failed: %w", c.commandName(), waitErr)
 	}
 	return nil
 }
@@ -178,7 +200,20 @@ func startDeviceFlowFallback(ctx context.Context, parser *DeviceFlowParser) func
 	}
 }
 
+// LoginArgs returns subcommand arguments; command adds the KAS namespace.
 func (c *Client) LoginArgs() []string {
+	if c.backend == config.BackendKAS {
+		// KiroCrew owns the vault and always uses a device flow here. kiro-agent
+		// itself is an ACP server, not a login CLI; legacy flags do not apply.
+		switch c.authMethod {
+		case config.AuthIdentityCenter:
+			return []string{"login", "--provider", "idc", "--start-url", c.identityURL, "--region", c.region}
+		case config.AuthBuilderID:
+			return []string{"login", "--provider", "builder_id"}
+		default:
+			return []string{"login", "--provider", c.authMethod}
+		}
+	}
 	args := []string{"login"}
 	switch c.authMethod {
 	case config.AuthIdentityCenter:
@@ -222,7 +257,7 @@ func (w *loginOutput) Write(data []byte) (int, error) {
 			n = len(data)
 		}
 		if len(w.pending)+n > maxLoginLine {
-			w.err = errors.New("kiro-cli login output line exceeds 1 MiB")
+			w.err = fmt.Errorf("%s login output line exceeds 1 MiB", w.client.commandName())
 			w.pending = nil
 			w.cancel()
 			return total - len(data), w.err
@@ -301,7 +336,7 @@ func (w *loginOutput) flush() {
 	line := string(w.pending)
 	w.pending = w.pending[:0]
 	if w.client.logger != nil {
-		w.client.logger.Printf("kiro-cli: %s", sanitizeLogLine(line))
+		w.client.logger.Printf("%s: %s", w.client.commandName(), sanitizeLogLine(line))
 	}
 	w.parser.Feed(line)
 }

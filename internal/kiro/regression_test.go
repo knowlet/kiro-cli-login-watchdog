@@ -19,6 +19,9 @@ import (
 // Re-exec the test executable instead of requiring a shell or a real Kiro
 // installation. These fixtures run identically in the three native CI jobs.
 func TestMain(m *testing.M) {
+	if os.Getenv("KCLW_KAS_HELPER") == "1" {
+		os.Exit(runKASHelper(os.Args[1:]))
+	}
 	if os.Getenv("KCLW_KIRO_HELPER") == "1" && len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "whoami", "logout":

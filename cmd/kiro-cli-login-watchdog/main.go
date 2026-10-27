@@ -58,13 +58,26 @@ func run(args []string) error {
 			if err := cfg.ValidateRuntime(); err != nil {
 				return err
 			}
-			resolved, err := exec.LookPath(cfg.KiroBin)
+			bin, envKey := cfg.Executable()
+			resolved, err := exec.LookPath(bin)
 			if err != nil {
-				return fmt.Errorf("resolve KCLW_KIRO_BIN: %w", err)
+				return fmt.Errorf("resolve %s: %w", envKey, err)
 			}
-			cfg.KiroBin, err = filepath.Abs(resolved)
+			resolved, err = filepath.Abs(resolved)
 			if err != nil {
 				return fmt.Errorf("resolve executable path: %w", err)
+			}
+			if cfg.Backend == config.BackendKAS {
+				cfg.KiroCrewBin = resolved
+			} else {
+				cfg.KiroBin = resolved
+			}
+			// Fail before starting a daemon or touching either credential store.
+			probeCtx, cancel := signalContext()
+			probeErr := kiro.New(cfg, nil).CheckCapabilities(probeCtx)
+			cancel()
+			if probeErr != nil {
+				return probeErr
 			}
 		}
 		switch command {
@@ -147,6 +160,12 @@ func startDaemon(cfg config.Config) error {
 	}
 	pid := cmd.Process.Pid
 	deadline := time.Now().Add(5 * time.Second)
+	if cfg.Backend == config.BackendKAS {
+		// The child repeats the bounded compatibility probe before claiming its
+		// instance. Allow that command's full timeout plus the startup overhead;
+		// a slow but compatible CLI must not be killed before it can report ready.
+		deadline = deadline.Add(cfg.CommandTimeout)
+	}
 	for time.Now().Before(deadline) {
 		record, readErr := daemon.ReadRecord(cfg.PIDFile)
 		if readErr == nil && record.PID == pid && daemon.Control(context.Background(), record, false) == nil {
@@ -217,7 +236,7 @@ func usageError() error {
 }
 
 func printUsage() {
-	fmt.Print(`kiro-cli-login-watchdog - keep Kiro CLI authentication alive
+	fmt.Print(`kiro-cli-login-watchdog - keep Kiro CLI or KiroCrew KAS authentication alive
 
 Usage:
   kiro-cli-login-watchdog start [--env-file .env]   Start detached daemon
