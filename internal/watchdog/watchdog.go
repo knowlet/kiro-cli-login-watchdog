@@ -32,7 +32,7 @@ func New(cfg config.Config, client KiroClient, n notifier.Notifier, logger *log.
 	return w
 }
 func (w *Watchdog) Run(ctx context.Context) error {
-	w.logger.Printf("watchdog started; check_interval=%s force_relogin_interval=%s auth_method=%s", w.cfg.CheckInterval, w.cfg.ForceReloginInterval, w.cfg.AuthMethod)
+	w.logger.Printf("watchdog started; check_interval=%s force_relogin_interval=%s backend=%s auth_method=%s", w.cfg.CheckInterval, w.cfg.ForceReloginInterval, w.cfg.DisplayName(), w.cfg.AuthMethod)
 	if err := w.Check(ctx); err != nil {
 		w.logger.Printf("initial check failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func (w *Watchdog) Check(ctx context.Context) error {
 	}
 	force := loggedIn && w.cfg.ForceReloginInterval > 0 && !w.lastRelogin.IsZero() && time.Since(w.lastRelogin) >= w.cfg.ForceReloginInterval
 	if loggedIn && !force {
-		w.logger.Printf("kiro-cli authentication is healthy")
+		w.logger.Printf("%s authentication is healthy", w.cfg.DisplayName())
 		return nil
 	}
 	if force {
@@ -66,12 +66,12 @@ func (w *Watchdog) Check(ctx context.Context) error {
 			return err
 		}
 	} else {
-		w.logger.Printf("kiro-cli is not authenticated; starting device-flow login")
+		w.logger.Printf("%s is not authenticated; starting device-flow login", w.cfg.DisplayName())
 	}
 	notified := false
 	err = w.kiro.Login(ctx, func(flow kiro.DeviceFlow) error {
 		notified = true
-		message := fmt.Sprintf("Kiro CLI login required\n\nCode: %s\nOpen: %s\n\nComplete the sign-in in your browser. The watchdog will keep waiting for Kiro CLI to finish the device flow.", flow.Code, flow.URL)
+		message := fmt.Sprintf("%s login required\n\nCode: %s\nOpen: %s\n\nComplete the sign-in in your browser. The watchdog will keep waiting for %s to finish the device flow.", w.cfg.DisplayName(), flow.Code, flow.URL, w.cfg.DisplayName())
 		notifyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		return w.notifier.Notify(notifyCtx, message)
@@ -87,14 +87,14 @@ func (w *Watchdog) Check(ctx context.Context) error {
 		return fmt.Errorf("verify login: %w", verifyErr)
 	}
 	if !loggedIn {
-		return fmt.Errorf("kiro-cli login command returned successfully but whoami is still unauthenticated")
+		return fmt.Errorf("%s login command returned successfully but whoami is still unauthenticated", w.cfg.DisplayName())
 	}
 	w.lastRelogin = time.Now()
-	w.logger.Printf("kiro-cli login restored")
+	w.logger.Printf("%s login restored", w.cfg.DisplayName())
 	if w.cfg.NotifySuccess {
 		notifyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
-		if err := w.notifier.Notify(notifyCtx, "Kiro CLI login restored successfully."); err != nil {
+		if err := w.notifier.Notify(notifyCtx, w.cfg.DisplayName()+" login restored successfully."); err != nil {
 			return fmt.Errorf("send success notification: %w", err)
 		}
 	}

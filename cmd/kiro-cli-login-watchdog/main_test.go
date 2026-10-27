@@ -18,10 +18,19 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KCLW_MAIN_HELPER") == "1" && len(os.Args) > 1 {
-		switch os.Args[1] {
+		action := os.Args[1]
+		kas := action == "kas" && len(os.Args) > 2
+		if kas {
+			action = os.Args[2]
+		}
+		switch action {
 		case "whoami":
 			if os.Getenv("KCLW_MAIN_CASE") == "login-hang" {
-				_, _ = fmt.Fprintln(os.Stderr, "Not logged in")
+				message := "Not logged in"
+				if kas {
+					message = "Not signed in to Kiro Crew."
+				}
+				_, _ = fmt.Fprintln(os.Stderr, message)
 				os.Exit(1)
 			}
 			fmt.Println(`{"authenticated":true}`)
@@ -61,7 +70,7 @@ func helperEnvironment(t *testing.T, mode string) (string, string) {
 	dir := t.TempDir()
 	for key, value := range map[string]string{
 		"KCLW_MAIN_HELPER": "1", "KCLW_MAIN_CASE": mode,
-		"KCLW_KIRO_BIN": exe, "KCLW_AUTH_METHOD": "builder-id", "KCLW_STATE_DIR": dir,
+		"KCLW_BACKEND": "kiro-cli", "KCLW_KIRO_BIN": exe, "KCLW_AUTH_METHOD": "builder-id", "KCLW_STATE_DIR": dir,
 		"KCLW_PID_FILE": filepath.Join(dir, "watchdog.pid"), "KCLW_LOG_FILE": filepath.Join(dir, "watchdog.log"),
 		"KCLW_TELEGRAM_BOT_TOKEN": "test-placeholder", "KCLW_TELEGRAM_CHAT_ID": "0",
 		"KCLW_CHECK_INTERVAL": "1h", "KCLW_COMMAND_TIMEOUT": "10s", "KCLW_LOGIN_TIMEOUT": "1m",
@@ -209,4 +218,31 @@ func TestCrashReleasesLockAndAllowsRestart(t *testing.T) {
 	requireCommand(t, exe, "start")
 	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
 	requireCommand(t, exe, "stop")
+}
+
+func TestKASOnceAndDetachedLifecycle(t *testing.T) {
+	exe, _ := helperEnvironment(t, "healthy")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	requireCommand(t, exe, "once")
+	requireCommand(t, exe, "start")
+	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	requireCommand(t, exe, "status")
+	requireCommand(t, exe, "stop")
+}
+
+func TestKASStopReapsActiveLoginChild(t *testing.T) {
+	exe, dir := helperEnvironment(t, "login-hang")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	requireCommand(t, exe, "start")
+	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	address := string(waitForFile(t, filepath.Join(dir, "child-address")))
+	requireCommand(t, exe, "stop")
+	if conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond); err == nil {
+		_ = conn.Close()
+		t.Fatal("KAS login child survived stop")
+	}
 }
