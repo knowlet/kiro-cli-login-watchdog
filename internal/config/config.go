@@ -36,12 +36,15 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	stateDir, err := defaultStateDir()
-	if err != nil {
-		return Config{}, fmt.Errorf("resolve state directory: %w", err)
-	}
+	var stateDir string
+	var err error
 	if v := strings.TrimSpace(os.Getenv("KCLW_STATE_DIR")); v != "" {
 		stateDir = expandHome(v)
+	} else {
+		stateDir, err = defaultStateDir()
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve state directory: %w", err)
+		}
 	}
 
 	cfg := Config{
