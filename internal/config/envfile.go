@@ -9,7 +9,8 @@ import (
 
 // LoadEnvFile loads KEY=VALUE entries without overwriting variables already
 // present in the process environment. It intentionally implements only the
-// dotenv subset useful for service configuration.
+// dotenv subset useful for service configuration, including an optional UTF-8
+// byte-order mark at the start of the file.
 func LoadEnvFile(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
@@ -24,7 +25,11 @@ func LoadEnvFile(path string) error {
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
-		line := strings.TrimSpace(scanner.Text())
+		line := scanner.Text()
+		if lineNo == 1 {
+			line = strings.TrimPrefix(line, "\uFEFF")
+		}
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
