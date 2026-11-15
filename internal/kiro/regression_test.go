@@ -46,6 +46,16 @@ func TestMain(m *testing.M) {
 			}
 		case "login":
 			switch os.Getenv("KCLW_KIRO_CASE") {
+			case "failed-pending-stdout", "failed-pending-stderr", "success-pending-stdout", "success-pending-stderr":
+				out := os.Stdout
+				mode := os.Getenv("KCLW_KIRO_CASE")
+				if strings.HasSuffix(mode, "stderr") {
+					out = os.Stderr
+				}
+				_, _ = fmt.Fprint(out, "Code: ABCD-EFGH\nOpen this URL: https://example.test/activate")
+				if strings.HasPrefix(mode, "failed") {
+					os.Exit(7)
+				}
 			case "delimited-wait", "delimited-stderr", "newline-wait":
 				out := os.Stdout
 				if os.Getenv("KCLW_KIRO_CASE") == "delimited-stderr" {
