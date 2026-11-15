@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/knowlet/kiro-cli-login-watchdog/internal/config"
@@ -99,10 +100,11 @@ func (c *Client) Logout(ctx context.Context) error {
 func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error) error {
 	loginCtx, cancel := context.WithTimeout(ctx, c.loginTimeout)
 	defer cancel()
+	var processFailed atomic.Bool
 	parser := NewDeviceFlowParser(func(flow DeviceFlow) error {
 		// Output may still drain after cancellation. Never send a newly parsed
 		// prompt once the attempt has already expired or been stopped.
-		if loginCtx.Err() != nil {
+		if processFailed.Load() || loginCtx.Err() != nil {
 			return nil
 		}
 		if onDeviceFlow != nil {
@@ -121,6 +123,9 @@ func (c *Client) Login(ctx context.Context, onDeviceFlow func(DeviceFlow) error)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	stopFallback := startDeviceFlowFallback(loginCtx, parser)
 	waitErr := cmd.Run()
+	// A failed child has no live device flow. Keep draining redacted output,
+	// but suppress newly delivered buffered or fallback prompts.
+	processFailed.Store(waitErr != nil)
 	// Join the waiter before reading parser errors or returning to the caller.
 	stopFallback()
 	stdout.flush()
