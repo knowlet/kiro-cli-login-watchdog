@@ -18,7 +18,12 @@ type Telegram struct {
 }
 
 func NewTelegram(token, chatID string) *Telegram {
-	return &Telegram{token: token, chatID: chatID, client: &http.Client{Timeout: 15 * time.Second}}
+	return &Telegram{token: token, chatID: chatID, client: &http.Client{
+		Timeout: 15 * time.Second,
+		// Device-flow messages contain short-lived credentials. Never forward
+		// them (or the credential-bearing request URL) through redirects.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 type telegramResponse struct {

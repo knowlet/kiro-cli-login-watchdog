@@ -65,3 +65,27 @@ func TestTelegramSuccessAndCancellation(t *testing.T) {
 		t.Fatalf("cancellation: %v", err)
 	}
 }
+
+func TestTelegramDoesNotFollowRedirects(t *testing.T) {
+	for _, status := range []int{301, 302, 303, 307, 308} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			n := NewTelegram("synthetic-bot-token", "synthetic-chat")
+			requests := 0
+			n.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				if requests > 1 {
+					t.Errorf("followed redirect to %s with method %s", req.URL.Host, req.Method)
+					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Location": {"https://untrusted.invalid/collect"}}, Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+			})
+			err := n.Notify(context.Background(), "Synthetic device code: ABCD-EFGH")
+			if err == nil {
+				t.Fatal("redirect must not count as a delivered notification")
+			}
+			if requests != 1 {
+				t.Fatalf("sent %d requests, want one", requests)
+			}
+		})
+	}
+}
