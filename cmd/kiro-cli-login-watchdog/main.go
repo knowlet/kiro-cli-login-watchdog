@@ -185,7 +185,10 @@ func startDaemon(cfg config.Config) error {
 		default:
 			// Retained child handle from Start, never a PID loaded from a file.
 			_ = cmd.Process.Kill()
-			<-exitCh
+			err := <-exitCh
+			if err != nil {
+				return fmt.Errorf("daemon did not become ready: %w; inspect %s", err, cfg.LogFile)
+			}
 			return fmt.Errorf("daemon did not become ready; inspect %s", cfg.LogFile)
 		}
 	}
