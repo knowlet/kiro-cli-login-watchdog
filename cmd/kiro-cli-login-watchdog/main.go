@@ -159,28 +159,74 @@ func startDaemon(cfg config.Config) error {
 		return fmt.Errorf("start daemon: %w", err)
 	}
 	pid := cmd.Process.Pid
-	deadline := time.Now().Add(5 * time.Second)
-	if cfg.Backend == config.BackendKAS {
-		// The child repeats the bounded compatibility probe before claiming its
-		// instance. Allow that command's full timeout plus the startup overhead;
-		// a slow but compatible CLI must not be killed before it can report ready.
-		deadline = deadline.Add(cfg.CommandTimeout)
-	}
-	for time.Now().Before(deadline) {
-		record, readErr := daemon.ReadRecord(cfg.PIDFile)
-		if readErr == nil && record.PID == pid && daemon.Control(context.Background(), record, false) == nil {
-			if err := cmd.Process.Release(); err != nil {
-				return fmt.Errorf("release daemon process: %w", err)
-			}
-			fmt.Printf("started kiro-cli-login-watchdog (pid %d)\nlog: %s\n", pid, cfg.LogFile)
-			return nil
+	// Wait owns this handle. Release would race with it. The child is in its
+	// own session, so when start returns successfully this process can exit
+	// and abandon the wait without signaling the daemon.
+	exitCh := make(chan error, 1)
+	go func() { exitCh <- cmd.Wait() }()
+
+	watchCtx, cancelWatch := context.WithCancel(context.Background())
+	defer cancelWatch()
+	readyCh := make(chan struct{}, 1)
+	go watchDaemonReady(watchCtx, cfg.PIDFile, pid, readyCh)
+
+	timer := time.NewTimer(daemonReadinessBudget(cfg))
+	defer timer.Stop()
+	select {
+	case err := <-exitCh:
+		return daemonExitedBeforeReady(err, cfg.LogFile)
+	case <-readyCh:
+		fmt.Printf("started kiro-cli-login-watchdog (pid %d)\nlog: %s\n", pid, cfg.LogFile)
+		return nil
+	case <-timer.C:
+		select {
+		case err := <-exitCh:
+			return daemonExitedBeforeReady(err, cfg.LogFile)
+		default:
+			// Retained child handle from Start, never a PID loaded from a file.
+			_ = cmd.Process.Kill()
+			<-exitCh
+			return fmt.Errorf("daemon did not become ready; inspect %s", cfg.LogFile)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	// This is our retained child handle, never a PID loaded from a file.
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
-	return fmt.Errorf("daemon did not become ready; inspect %s", cfg.LogFile)
+}
+
+// daemonReadinessBudget is how long start waits for the detached child to
+// publish a live control record. KAS repeats its bounded compatibility probe
+// before that record exists, so the budget includes the probe's full timeout.
+func daemonReadinessBudget(cfg config.Config) time.Duration {
+	budget := 5 * time.Second
+	if cfg.Backend == config.BackendKAS {
+		budget += cfg.CommandTimeout
+	}
+	return budget
+}
+
+func daemonExitedBeforeReady(err error, logFile string) error {
+	if err == nil {
+		return fmt.Errorf("daemon exited before becoming ready; inspect %s", logFile)
+	}
+	return fmt.Errorf("daemon exited before becoming ready: %w; inspect %s", err, logFile)
+}
+
+func watchDaemonReady(ctx context.Context, pidFile string, pid int, ready chan<- struct{}) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		record, readErr := daemon.ReadRecord(pidFile)
+		if readErr == nil && record.PID == pid && daemon.Control(ctx, record, false) == nil {
+			select {
+			case ready <- struct{}{}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func stopDaemon(cfg config.Config) error {

@@ -49,6 +49,20 @@ func TestMain(m *testing.M) {
 					_ = file.Close()
 				}
 				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
+			case "kas-child-immediate-exit":
+				// Parent preflight succeeds. The detached child's repeated probe
+				// exits at once, so run never publishes a daemon record.
+				marker := filepath.Join(os.Getenv("KCLW_STATE_DIR"), "help-probed")
+				file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+				if os.IsExist(err) {
+					fmt.Fprintln(os.Stderr, "child-exited-immediately")
+					os.Exit(2)
+				} else if err != nil {
+					os.Exit(2)
+				} else {
+					_ = file.Close()
+				}
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
 			default:
 				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
 			}
@@ -284,9 +298,16 @@ func TestKASDetachedStartupRejectsChildCapabilityTimeout(t *testing.T) {
 	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
 	t.Setenv("KCLW_COMMAND_TIMEOUT", "2s")
 	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	started := time.Now()
 	out, err := invoke(exe, "start")
-	if err == nil || !strings.Contains(out, "daemon did not become ready") {
-		t.Fatalf("start: %v\n%s", err, out)
+	elapsed := time.Since(started)
+	// The child probe hits its 2s command timeout and run exits. start must
+	// surface that exit instead of polling out the 5s+timeout readiness budget.
+	if err == nil || !strings.Contains(out, "daemon exited before becoming ready") || !strings.Contains(out, "exit status 1") {
+		t.Fatalf("start: %v elapsed=%s\n%s", err, elapsed, out)
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("start waited %s after the child had exited", elapsed)
 	}
 	logs, err := os.ReadFile(filepath.Join(dir, "watchdog.log"))
 	if err != nil || !strings.Contains(string(logs), "probe kirocrew kas --help interrupted: context deadline exceeded") {
@@ -297,6 +318,43 @@ func TestKASDetachedStartupRejectsChildCapabilityTimeout(t *testing.T) {
 	}
 	if out := requireCommand(t, exe, "status"); strings.TrimSpace(out) != "stopped" {
 		t.Fatal(out)
+	}
+}
+
+func TestStartReturnsPromptlyWhenChildExits(t *testing.T) {
+	exe, dir := helperEnvironment(t, "kas-child-immediate-exit")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	// Larger than the assertion below. The old loop held the control lock for
+	// five seconds plus this timeout after the child had already exited.
+	t.Setenv("KCLW_COMMAND_TIMEOUT", "30s")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	started := time.Now()
+	out, err := exec.CommandContext(ctx, exe, "start").CombinedOutput()
+	elapsed := time.Since(started)
+	text := string(out)
+	if err == nil || !strings.Contains(text, "daemon exited before becoming ready") || !strings.Contains(text, "exit status 1") {
+		t.Fatalf("start err=%v elapsed=%s output=%q", err, elapsed, text)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("start returned in %s; child exit must not wait out the readiness budget", elapsed)
+	}
+	lock, lockErr := daemon.Acquire(filepath.Join(dir, "watchdog.pid.control.lock"))
+	if lockErr != nil {
+		t.Fatalf("control lock still held after start returned: %v", lockErr)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "watchdog.pid")); !os.IsNotExist(statErr) {
+		t.Fatalf("exited child left daemon state: %v", statErr)
+	}
+	logs, readErr := os.ReadFile(filepath.Join(dir, "watchdog.log"))
+	if readErr != nil || !strings.Contains(string(logs), "exit status 2") {
+		t.Fatalf("child probe failure not recorded: %v\n%s", readErr, logs)
 	}
 }
 
