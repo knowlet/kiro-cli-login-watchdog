@@ -41,8 +41,15 @@ func TestKASAuthCommandHelp(t *testing.T) {
 		{"{login,whoami}", false},
 		{"{login,whoami} {logout}", false},
 		{"{login,whoami,logout-extra}", false},
-		{"{ login,\n whoami, logout }", true},
-		{"\x1b[32m{login,whoami,logout}\x1b[0m", true},
+		{"usage: kirocrew kas [-h] { login,\n whoami, logout } ...", true},
+		{"usage: kirocrew kas [-h] \x1b[32m{login,whoami,logout}\x1b[0m ...", true},
+		{"usage: kirocrew kas [-h] {login,whoami,logout} ...\r\n", true},
+		// The choice set must be the positional subcommands in usage.
+		{"{login,whoami,logout}", false},
+		{"usage: kirocrew kas [-h] {install,status,remove} ...\n\n  {login,whoami,logout}", false},
+		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout}] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [--operation\n    {login,whoami,logout}]\n    {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] --operation={login,whoami,logout} {install,status,remove} ...", false},
 	} {
 		if got := kasAuthCommandsAvailable(tc.help); got != tc.want {
 			t.Errorf("available(%q)=%v, want %v", tc.help, got, tc.want)

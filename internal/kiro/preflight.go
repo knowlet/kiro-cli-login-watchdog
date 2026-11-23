@@ -35,13 +35,39 @@ func (c *Client) CheckCapabilities(ctx context.Context) error {
 
 var kasCommandChoicesRE = regexp.MustCompile(`\{([^{}]+)\}`)
 
+// kasUsage returns argparse's usage block: from "usage:" to the first blank
+// line, which may wrap across several lines.
+func kasUsage(help string) string {
+	start := strings.Index(strings.ToLower(help), "usage:")
+	if start < 0 {
+		return ""
+	}
+	usage := help[start:]
+	if end := strings.Index(usage, "\n\n"); end >= 0 {
+		usage = usage[:end]
+	}
+	return usage
+}
+
 func kasAuthCommandsAvailable(help string) bool {
-	clean := ansiRE.ReplaceAllString(help, "")
-	// argparse exposes subcommands as one comma-separated choice set. Require
-	// all three in the SAME set, not words in prose or a successful help exit.
-	for _, match := range kasCommandChoicesRE.FindAllStringSubmatch(clean, -1) {
+	clean := strings.ReplaceAll(ansiRE.ReplaceAllString(help, ""), "\r\n", "\n")
+	// argparse lists the subcommands as the positional choice set in the
+	// usage line. Require all three in that SAME set: not words in prose, not
+	// a choice set elsewhere in the help, and not an option's choices such
+	// as "--operation {login,whoami,logout}".
+	usage := kasUsage(clean)
+	for _, loc := range kasCommandChoicesRE.FindAllStringSubmatchIndex(usage, -1) {
+		// Skip an option's argument: the preceding token is an option flag
+		// still open (e.g. "[--operation" or "--operation="), not "[-h]".
+		before := strings.Fields(strings.TrimRight(usage[:loc[0]], " \t\n["))
+		if len(before) > 0 {
+			last := before[len(before)-1]
+			if strings.HasPrefix(strings.TrimLeft(last, "["), "-") && !strings.HasSuffix(last, "]") {
+				continue
+			}
+		}
 		choices := make(map[string]bool)
-		for _, choice := range strings.Split(match[1], ",") {
+		for _, choice := range strings.Split(usage[loc[2]:loc[3]], ",") {
 			choices[strings.TrimSpace(choice)] = true
 		}
 		if choices["login"] && choices["whoami"] && choices["logout"] {
