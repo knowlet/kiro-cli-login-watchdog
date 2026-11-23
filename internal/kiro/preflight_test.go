@@ -50,6 +50,16 @@ func TestKASAuthCommandHelp(t *testing.T) {
 		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout}] {install,status,remove} ...", false},
 		{"usage: kirocrew kas [-h] [--operation\n    {login,whoami,logout}]\n    {install,status,remove} ...", false},
 		{"usage: kirocrew kas [-h] --operation={login,whoami,logout} {install,status,remove} ...", false},
+		// nargs and other multi-value option forms repeat or nest the choice set.
+		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout} {login,whoami,logout}] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] --operation {login,whoami,logout}\n                    {login,whoami,logout}\n                    {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout} {login,whoami,logout} {login,whoami,logout}] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [-o {login,whoami,logout} {login,whoami,logout}] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout} [{login,whoami,logout} ...]] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [--operation [{login,whoami,logout} ...]] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [--operation [{login,whoami,logout}]] {install,status,remove} ...", false},
+		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout} {login,whoami,logout}] {login,whoami,logout} ...", true},
+		{"usage: kirocrew kas [-h] --operation {login,whoami,logout} {login,whoami,logout} {login,whoami,logout} ...", true},
 	} {
 		if got := kasAuthCommandsAvailable(tc.help); got != tc.want {
 			t.Errorf("available(%q)=%v, want %v", tc.help, got, tc.want)

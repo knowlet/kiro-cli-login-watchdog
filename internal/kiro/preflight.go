@@ -57,14 +57,17 @@ func kasAuthCommandsAvailable(help string) bool {
 	// as "--operation {login,whoami,logout}".
 	usage := kasUsage(clean)
 	for _, loc := range kasCommandChoicesRE.FindAllStringSubmatchIndex(usage, -1) {
-		// Skip an option's argument: the preceding token is an option flag
-		// still open (e.g. "[--operation" or "--operation="), not "[-h]".
-		before := strings.Fields(strings.TrimRight(usage[:loc[0]], " \t\n["))
-		if len(before) > 0 {
-			last := before[len(before)-1]
-			if strings.HasPrefix(strings.TrimLeft(last, "["), "-") && !strings.HasSuffix(last, "]") {
-				continue
-			}
+		// argparse formats subparsers as "{a,b} ..." at bracket depth zero.
+		// An option's choices stay inside its [] group, including nargs forms:
+		// nargs=N repeats "{a,b}", nargs=+ is "{a,b} [{a,b} ...]", and nargs=*
+		// or ? nests the set as "[{a,b} ...]" or "[{a,b}]". A repeat is not a
+		// subcommand list just because the flag is no longer the previous token.
+		if bracketDepth(usage[:loc[0]]) != 0 {
+			continue
+		}
+		rest := strings.TrimLeft(usage[loc[1]:], " \t\r\n")
+		if !strings.HasPrefix(rest, "...") {
+			continue
 		}
 		choices := make(map[string]bool)
 		for _, choice := range strings.Split(usage[loc[2]:loc[3]], ",") {
@@ -75,4 +78,19 @@ func kasAuthCommandsAvailable(help string) bool {
 		}
 	}
 	return false
+}
+
+func bracketDepth(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
 }
