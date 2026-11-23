@@ -11,6 +11,10 @@ import (
 var (
 	codeRE = regexp.MustCompile(`(?i)\bcode\s*:\s*([A-Z0-9][A-Z0-9-]{2,})`)
 	urlRE  = regexp.MustCompile(`https?://[^\s]+`)
+	// KiroCrew's prompt can carry a verification URL without /device or
+	// user_code. Match its full cue, not an arbitrary URL in help/error output.
+	kasOpenPrefixRE = regexp.MustCompile(`(?i)\bopen\s+$`)
+	kasOpenSuffixRE = regexp.MustCompile(`(?i)^\s+in a browser on any device(?:[.!]?\s*$)`)
 )
 
 const (
@@ -46,7 +50,9 @@ func deviceURLCandidates(clean string) []deviceURLCandidate {
 	previousEnd := 0
 	for _, span := range urlRE.FindAllStringIndex(clean, -1) {
 		// A cue applies only to the next URL, not every URL on the same line.
-		cued := strings.Contains(strings.ToLower(clean[previousEnd:span[0]]), "open this url")
+		prefix := clean[previousEnd:span[0]]
+		cued := strings.Contains(strings.ToLower(prefix), "open this url") ||
+			(kasOpenPrefixRE.MatchString(prefix) && kasOpenSuffixRE.MatchString(clean[span[1]:]))
 		previousEnd = span[1]
 		raw := strings.TrimRight(clean[span[0]:span[1]], ".,;)]}")
 		parsed, err := url.Parse(raw)

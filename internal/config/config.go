@@ -12,6 +12,9 @@ import (
 )
 
 const (
+	BackendKiroCLI = "kiro-cli"
+	BackendKAS     = "kas"
+
 	AuthIdentityCenter = "identity-center"
 	AuthBuilderID      = "builder-id"
 	AuthGoogle         = "google"
@@ -19,6 +22,8 @@ const (
 )
 
 type Config struct {
+	Backend              string
+	KiroCrewBin          string
 	KiroBin              string
 	AuthMethod           string
 	IdentityProvider     string
@@ -45,6 +50,8 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
+		Backend:              strings.ToLower(envOr("KCLW_BACKEND", BackendKiroCLI)),
+		KiroCrewBin:          envOr("KCLW_KIROCREW_BIN", "kirocrew"),
 		KiroBin:              envOr("KCLW_KIRO_BIN", "kiro-cli"),
 		AuthMethod:           strings.ToLower(envOr("KCLW_AUTH_METHOD", AuthIdentityCenter)),
 		IdentityProvider:     strings.TrimSpace(os.Getenv("KCLW_IDENTITY_PROVIDER")),
@@ -86,9 +93,31 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// Executable selects the authentication owner explicitly. A KAS configuration
+// never falls back to kiro-cli: the two programs may hold different identities.
+func (c Config) Executable() (bin, envKey string) {
+	if c.Backend == BackendKAS {
+		return c.KiroCrewBin, "KCLW_KIROCREW_BIN"
+	}
+	return c.KiroBin, "KCLW_KIRO_BIN"
+}
+
+func (c Config) DisplayName() string {
+	if c.Backend == BackendKAS {
+		return "KiroCrew KAS"
+	}
+	return "Kiro CLI"
+}
+
 func (c Config) ValidateRuntime() error {
-	if c.KiroBin == "" {
-		return errors.New("KCLW_KIRO_BIN cannot be empty")
+	switch c.Backend {
+	case "", BackendKiroCLI, BackendKAS:
+		// The zero value retains compatibility with existing Config callers.
+	default:
+		return fmt.Errorf("unsupported KCLW_BACKEND %q (use kiro-cli or kas)", c.Backend)
+	}
+	if bin, key := c.Executable(); strings.TrimSpace(bin) == "" {
+		return fmt.Errorf("%s cannot be empty", key)
 	}
 	switch c.AuthMethod {
 	case AuthIdentityCenter:

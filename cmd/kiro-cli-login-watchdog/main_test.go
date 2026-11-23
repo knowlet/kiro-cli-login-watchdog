@@ -18,10 +18,62 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KCLW_MAIN_HELPER") == "1" && len(os.Args) > 1 {
-		switch os.Args[1] {
+		action := os.Args[1]
+		kas := action == "kas" && len(os.Args) > 2
+		if kas {
+			action = os.Args[2]
+		}
+		switch action {
+		case "--help":
+			if !kas || len(os.Args) != 3 {
+				os.Exit(2)
+			}
+			switch os.Getenv("KCLW_MAIN_CASE") {
+			case "kas-unsupported":
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove} ...")
+			case "kas-help-error":
+				fmt.Fprintln(os.Stderr, "private-help-diagnostic")
+				os.Exit(2)
+			case "kas-help-wait":
+				time.Sleep(time.Minute)
+			case "kas-help-slow-child":
+				// The parent's preflight is fast; only the detached child's probe
+				// exceeds the old five-second readiness budget.
+				marker := filepath.Join(os.Getenv("KCLW_STATE_DIR"), "help-probed")
+				file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+				if os.IsExist(err) {
+					time.Sleep(6 * time.Second)
+				} else if err != nil {
+					os.Exit(2)
+				} else {
+					_ = file.Close()
+				}
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
+			case "kas-child-immediate-exit":
+				// Parent preflight succeeds. The detached child's repeated probe
+				// exits at once, so run never publishes a daemon record.
+				marker := filepath.Join(os.Getenv("KCLW_STATE_DIR"), "help-probed")
+				file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+				if os.IsExist(err) {
+					fmt.Fprintln(os.Stderr, "child-exited-immediately")
+					os.Exit(2)
+				} else if err != nil {
+					os.Exit(2)
+				} else {
+					_ = file.Close()
+				}
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
+			default:
+				fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout,route} ...")
+			}
+			os.Exit(0)
 		case "whoami":
 			if os.Getenv("KCLW_MAIN_CASE") == "login-hang" {
-				_, _ = fmt.Fprintln(os.Stderr, "Not logged in")
+				message := "Not logged in"
+				if kas {
+					message = "Not signed in to Kiro Crew."
+				}
+				_, _ = fmt.Fprintln(os.Stderr, message)
 				os.Exit(1)
 			}
 			fmt.Println(`{"authenticated":true}`)
@@ -61,7 +113,7 @@ func helperEnvironment(t *testing.T, mode string) (string, string) {
 	dir := t.TempDir()
 	for key, value := range map[string]string{
 		"KCLW_MAIN_HELPER": "1", "KCLW_MAIN_CASE": mode,
-		"KCLW_KIRO_BIN": exe, "KCLW_AUTH_METHOD": "builder-id", "KCLW_STATE_DIR": dir,
+		"KCLW_BACKEND": "kiro-cli", "KCLW_KIRO_BIN": exe, "KCLW_AUTH_METHOD": "builder-id", "KCLW_STATE_DIR": dir,
 		"KCLW_PID_FILE": filepath.Join(dir, "watchdog.pid"), "KCLW_LOG_FILE": filepath.Join(dir, "watchdog.log"),
 		"KCLW_TELEGRAM_BOT_TOKEN": "test-placeholder", "KCLW_TELEGRAM_CHAT_ID": "0",
 		"KCLW_CHECK_INTERVAL": "1h", "KCLW_COMMAND_TIMEOUT": "10s", "KCLW_LOGIN_TIMEOUT": "1m",
@@ -209,4 +261,114 @@ func TestCrashReleasesLockAndAllowsRestart(t *testing.T) {
 	requireCommand(t, exe, "start")
 	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
 	requireCommand(t, exe, "stop")
+}
+
+func TestKASOnceAndDetachedLifecycle(t *testing.T) {
+	exe, _ := helperEnvironment(t, "healthy")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	requireCommand(t, exe, "once")
+	requireCommand(t, exe, "start")
+	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	requireCommand(t, exe, "status")
+	requireCommand(t, exe, "stop")
+}
+
+func TestKASDetachedStartupWaitsForSlowChildCapabilityProbe(t *testing.T) {
+	exe, _ := helperEnvironment(t, "kas-help-slow-child")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	requireCommand(t, exe, "start")
+	if out := requireCommand(t, exe, "status"); !strings.Contains(out, "running (pid") {
+		t.Fatal(out)
+	}
+	requireCommand(t, exe, "stop")
+	if out := requireCommand(t, exe, "status"); strings.TrimSpace(out) != "stopped" {
+		t.Fatal(out)
+	}
+}
+
+func TestKASDetachedStartupRejectsChildCapabilityTimeout(t *testing.T) {
+	exe, dir := helperEnvironment(t, "kas-help-slow-child")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	t.Setenv("KCLW_COMMAND_TIMEOUT", "2s")
+	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	started := time.Now()
+	out, err := invoke(exe, "start")
+	elapsed := time.Since(started)
+	// The child probe hits its 2s command timeout and run exits. start must
+	// surface that exit instead of polling out the 5s+timeout readiness budget.
+	if err == nil || !strings.Contains(out, "daemon exited before becoming ready") || !strings.Contains(out, "exit status 1") {
+		t.Fatalf("start: %v elapsed=%s\n%s", err, elapsed, out)
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("start waited %s after the child had exited", elapsed)
+	}
+	logs, err := os.ReadFile(filepath.Join(dir, "watchdog.log"))
+	if err != nil || !strings.Contains(string(logs), "probe kirocrew kas --help interrupted: context deadline exceeded") {
+		t.Fatalf("child capability timeout not reported: %v\n%s", err, logs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "watchdog.pid")); !os.IsNotExist(err) {
+		t.Fatalf("timed-out child created daemon state: %v", err)
+	}
+	if out := requireCommand(t, exe, "status"); strings.TrimSpace(out) != "stopped" {
+		t.Fatal(out)
+	}
+}
+
+func TestStartReturnsPromptlyWhenChildExits(t *testing.T) {
+	exe, dir := helperEnvironment(t, "kas-child-immediate-exit")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	// Larger than the assertion below. The old loop held the control lock for
+	// five seconds plus this timeout after the child had already exited.
+	t.Setenv("KCLW_COMMAND_TIMEOUT", "30s")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	started := time.Now()
+	out, err := exec.CommandContext(ctx, exe, "start").CombinedOutput()
+	elapsed := time.Since(started)
+	text := string(out)
+	if err == nil || !strings.Contains(text, "daemon exited before becoming ready") || !strings.Contains(text, "exit status 1") {
+		t.Fatalf("start err=%v elapsed=%s output=%q", err, elapsed, text)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("start returned in %s; child exit must not wait out the readiness budget", elapsed)
+	}
+	lock, lockErr := daemon.Acquire(filepath.Join(dir, "watchdog.pid.control.lock"))
+	if lockErr != nil {
+		t.Fatalf("control lock still held after start returned: %v", lockErr)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "watchdog.pid")); !os.IsNotExist(statErr) {
+		t.Fatalf("exited child left daemon state: %v", statErr)
+	}
+	logs, readErr := os.ReadFile(filepath.Join(dir, "watchdog.log"))
+	if readErr != nil || !strings.Contains(string(logs), "exit status 2") {
+		t.Fatalf("child probe failure not recorded: %v\n%s", readErr, logs)
+	}
+}
+
+func TestKASStopReapsActiveLoginChild(t *testing.T) {
+	exe, dir := helperEnvironment(t, "login-hang")
+	t.Setenv("KCLW_BACKEND", "kas")
+	t.Setenv("KCLW_KIROCREW_BIN", exe)
+	t.Setenv("KCLW_KIRO_BIN", "must-not-resolve-kiro-cli")
+	requireCommand(t, exe, "start")
+	t.Cleanup(func() { _, _ = invoke(exe, "stop") })
+	address := string(waitForFile(t, filepath.Join(dir, "child-address")))
+	requireCommand(t, exe, "stop")
+	if conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond); err == nil {
+		_ = conn.Close()
+		t.Fatal("KAS login child survived stop")
+	}
 }

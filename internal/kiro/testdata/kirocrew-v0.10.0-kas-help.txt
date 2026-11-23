@@ -1,0 +1,12 @@
+usage: kirocrew kas [-h] {install,status,remove} ...
+
+positional arguments:
+  {install,status,remove}
+    install             Download this release's pinned KAS engine + Node
+                        runtime
+    status              Show the pinned engine, what is installed, and the
+                        route
+    remove              Delete installed engine versions
+
+options:
+  -h, --help            show this help message and exit
