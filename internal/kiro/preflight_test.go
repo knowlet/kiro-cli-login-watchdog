@@ -5,10 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -132,10 +130,13 @@ func TestKASHelpProbeCancelReapsLingeringDescendant(t *testing.T) {
 	if convErr != nil || n <= 0 {
 		t.Fatalf("descendant pid %q: %v", pid, convErr)
 	}
-	if runtime.GOOS != "windows" {
-		if err := syscall.Kill(n, 0); err != nil {
-			t.Fatalf("descendant pid %d was not alive after the probe: %v", n, err)
+	// The probe must kill the process tree, not leave the grandchild running.
+	deadline := time.Now().Add(2 * time.Second)
+	for !descendantExited(n) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant pid %d still running after probe cancel", n)
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

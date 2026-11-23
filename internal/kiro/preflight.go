@@ -71,11 +71,23 @@ func cLocaleEnv(base []string) []string {
 	return append(filtered, "LC_ALL=C")
 }
 
+// probeTree kills the help probe and every process it has started.
+type probeTree interface {
+	started() error
+	kill()
+	release()
+}
+
 // combinedOutputLimited merges stdout and stderr and stops after limit bytes.
-// A longer stream is an error. Cancel closes the read end before Wait: a
-// descendant that inherited the write end would otherwise keep ReadAll
-// blocked after the direct child has been killed.
+// A longer stream is an error. Cancel closes the read end before the tree is
+// killed and reaped: a descendant that inherited the write end would otherwise
+// keep ReadAll blocked after the direct child has been killed.
 func combinedOutputLimited(ctx context.Context, cmd *exec.Cmd, limit int) ([]byte, error) {
+	tree, err := armProbeTree(cmd)
+	if err != nil {
+		return nil, err
+	}
+	defer tree.release()
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -85,6 +97,13 @@ func combinedOutputLimited(ctx context.Context, cmd *exec.Cmd, limit int) ([]byt
 	if err = cmd.Start(); err != nil {
 		_ = writer.Close()
 		_ = reader.Close()
+		return nil, err
+	}
+	if err = tree.started(); err != nil {
+		tree.kill()
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = cmd.Wait()
 		return nil, err
 	}
 	_ = writer.Close()
@@ -103,8 +122,8 @@ func combinedOutputLimited(ctx context.Context, cmd *exec.Cmd, limit int) ([]byt
 	_ = reader.Close()
 
 	exceeded := len(buf) > limit
-	if (exceeded || ctx.Err() != nil) && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+	if exceeded || ctx.Err() != nil {
+		tree.kill()
 	}
 	waitErr := cmd.Wait()
 	if ctx.Err() != nil {
