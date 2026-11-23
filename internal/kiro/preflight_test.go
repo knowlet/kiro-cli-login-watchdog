@@ -60,6 +60,8 @@ func TestKASAuthCommandHelp(t *testing.T) {
 		{"usage: kirocrew kas [-h] [--operation [{login,whoami,logout}]] {install,status,remove} ...", false},
 		{"usage: kirocrew kas [-h] [--operation {login,whoami,logout} {login,whoami,logout}] {login,whoami,logout} ...", true},
 		{"usage: kirocrew kas [-h] --operation {login,whoami,logout} {login,whoami,logout} {login,whoami,logout} ...", true},
+		// A translated argparse heading is not the English usage block.
+		{"utilisation : kirocrew kas [-h] {install,status,remove,login,whoami,logout} ...", false},
 	} {
 		if got := kasAuthCommandsAvailable(tc.help); got != tc.want {
 			t.Errorf("available(%q)=%v, want %v", tc.help, got, tc.want)
@@ -88,5 +90,22 @@ func TestKASCapabilityProbeErrors(t *testing.T) {
 	c.commandTimeout = -time.Second
 	if err := c.CheckCapabilities(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline lost: %v", err)
+	}
+}
+
+func TestKASHelpProbeForcesCLocale(t *testing.T) {
+	t.Setenv("LANGUAGE", "fr_FR")
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	c := kasClient(t, "localized-help", nil)
+	if err := c.CheckCapabilities(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKASHelpProbeRejectsOversizedOutput(t *testing.T) {
+	c := kasClient(t, "huge-help", nil)
+	err := c.CheckCapabilities(context.Background())
+	if !errors.Is(err, errKASHelpTooLarge) {
+		t.Fatalf("oversized help: %v", err)
 	}
 }

@@ -33,6 +33,22 @@ func runKASHelper(args []string) int {
 	}
 	mode := os.Getenv("KCLW_KAS_CASE")
 	switch args[1] {
+	case "--help":
+		switch mode {
+		case "localized-help":
+			// GNU gettext consults LANGUAGE before LC_ALL. A translated
+			// heading is what a localized argparse prints unless the probe
+			// clears LANGUAGE and sets LC_ALL=C.
+			if os.Getenv("LC_ALL") != "C" || os.Getenv("LANGUAGE") != "" {
+				fmt.Println("utilisation : kirocrew kas [-h] {install,status,remove,login,whoami,logout} ...")
+				return 0
+			}
+		case "huge-help":
+			fmt.Print(strings.Repeat("x", kasHelpProbeLimit+1))
+			return 0
+		}
+		fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout} ...")
+		return 0
 	case "whoami", "logout":
 		switch mode {
 		case "signed-out":

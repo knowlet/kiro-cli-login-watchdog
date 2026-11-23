@@ -2,12 +2,23 @@ package kiro
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
 	"github.com/knowlet/kiro-cli-login-watchdog/internal/config"
 )
+
+// kasHelpProbeLimit is the most help text the capability probe will buffer.
+// Real kas --help output is a few kilobytes; anything larger is rejected
+// instead of being parsed from a truncated stream.
+const kasHelpProbeLimit = 256 * 1024
+
+var errKASHelpTooLarge = errors.New("kas help probe output exceeded the size limit")
 
 // CheckCapabilities probes only help, never the vault. The KAS auth verbs were
 // introduced after KiroCrew v0.10.0, in upstream commit d199f301 (2026-10-26).
@@ -19,9 +30,12 @@ func (c *Client) CheckCapabilities(ctx context.Context) error {
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, c.commandTimeout)
 	defer cancel()
-	out, err := c.command(commandCtx, "--help").CombinedOutput()
+	out, err := c.readKASHelp(commandCtx)
 	if commandCtx.Err() != nil {
 		return fmt.Errorf("probe kirocrew kas --help interrupted: %w", commandCtx.Err())
+	}
+	if errors.Is(err, errKASHelpTooLarge) {
+		return err
 	}
 	if err != nil {
 		// Do not include raw subprocess output in a daemon error/log.
@@ -35,8 +49,62 @@ func (c *Client) CheckCapabilities(ctx context.Context) error {
 
 var kasCommandChoicesRE = regexp.MustCompile(`\{([^{}]+)\}`)
 
+// readKASHelp runs kas --help in the C locale. argparse translates the
+// "usage:" heading through gettext, and LANGUAGE overrides LC_ALL, so a
+// localized parent would hide the subcommand list from kasUsage.
+func (c *Client) readKASHelp(ctx context.Context) ([]byte, error) {
+	cmd := c.command(ctx, "--help")
+	cmd.Env = cLocaleEnv(os.Environ())
+	return combinedOutputLimited(cmd, kasHelpProbeLimit)
+}
+
+// cLocaleEnv forces English gettext messages for the help probe.
+func cLocaleEnv(base []string) []string {
+	filtered := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && (strings.EqualFold(key, "LANGUAGE") || strings.EqualFold(key, "LC_ALL")) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, "LC_ALL=C")
+}
+
+// combinedOutputLimited merges stdout and stderr and stops after limit bytes.
+// A longer stream is an error; the process is killed so a writer blocked on
+// the pipe cannot hold the probe open until the command timeout.
+func combinedOutputLimited(cmd *exec.Cmd, limit int) ([]byte, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+	if err = cmd.Start(); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	_ = writer.Close()
+	buf, readErr := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	exceeded := len(buf) > limit
+	if exceeded && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if exceeded {
+		return nil, fmt.Errorf("probe kirocrew kas --help output exceeded %d bytes: %w", limit, errKASHelpTooLarge)
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	return buf, waitErr
+}
+
 // kasUsage returns argparse's usage block: from "usage:" to the first blank
-// line, which may wrap across several lines.
+// line, which may wrap across several lines. The help probe forces the C
+// locale so this English heading is what argparse prints.
 func kasUsage(help string) string {
 	start := strings.Index(strings.ToLower(help), "usage:")
 	if start < 0 {
