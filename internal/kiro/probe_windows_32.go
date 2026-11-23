@@ -2,14 +2,50 @@
 
 package kiro
 
-import "unsafe"
+import (
+	"fmt"
+	"syscall"
+	"unsafe"
+)
 
-// jobBasicLimitSize is sizeof(JOBOBJECT_BASIC_LIMIT_INFORMATION) on 32-bit Windows,
-// including the trailing pad to an 8-byte boundary.
-const jobBasicLimitSize = 48
+type jobBasicLimit struct {
+	PerProcessUserTimeLimit int64
+	PerJobUserTimeLimit     int64
+	LimitFlags              uint32
+	MinimumWorkingSetSize   uintptr
+	MaximumWorkingSetSize   uintptr
+	ActiveProcessLimit      uint32
+	Affinity                uintptr
+	PriorityClass           uint32
+	SchedulingClass         uint32
+	_                       uint32
+}
 
-func jobBasicLimitBytes() []byte {
-	info := make([]byte, jobBasicLimitSize)
-	*(*uint32)(unsafe.Pointer(&info[16])) = jobObjectLimitKillOnJobClose
-	return info
+type ioCounters struct {
+	ReadOperationCount  uint64
+	WriteOperationCount uint64
+	OtherOperationCount uint64
+	ReadTransferCount   uint64
+	WriteTransferCount  uint64
+	OtherTransferCount  uint64
+}
+
+type jobExtendedLimit struct {
+	Basic                 jobBasicLimit
+	Io                    ioCounters
+	ProcessMemoryLimit    uintptr
+	JobMemoryLimit        uintptr
+	PeakProcessMemoryUsed uintptr
+	PeakJobMemoryUsed     uintptr
+}
+
+func setJobKillOnClose(job syscall.Handle) error {
+	info := jobExtendedLimit{}
+	info.Basic.LimitFlags = jobObjectLimitKillOnJobClose
+	ret, _, err := procSetInformationJob.Call(uintptr(job), jobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info))
+	if ret == 0 {
+		return fmt.Errorf("set job limits: %w", err)
+	}
+	return nil
 }

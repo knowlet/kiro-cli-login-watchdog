@@ -10,12 +10,12 @@ import (
 )
 
 const (
-	createSuspended                = 0x00000004
-	jobObjectBasicLimitInformation = 2
-	jobObjectLimitKillOnJobClose   = 0x00002000
-	processSetQuota                = 0x0100
-	processTerminate               = 0x0001
-	threadSuspendResume            = 0x0002
+	createSuspended                   = 0x00000004
+	jobObjectExtendedLimitInformation = 9
+	jobObjectLimitKillOnJobClose      = 0x00002000
+	processSetQuota                   = 0x0100
+	processTerminate                  = 0x0001
+	threadSuspendResume               = 0x0002
 )
 
 var (
@@ -65,12 +65,9 @@ func createKillJob() (syscall.Handle, error) {
 		return 0, fmt.Errorf("create job object: %w", err)
 	}
 	job := syscall.Handle(r)
-	info := jobBasicLimitBytes()
-	ret, _, err := procSetInformationJob.Call(uintptr(job), jobObjectBasicLimitInformation,
-		uintptr(unsafe.Pointer(&info[0])), uintptr(len(info)))
-	if ret == 0 {
+	if err = setJobKillOnClose(job); err != nil {
 		_ = syscall.CloseHandle(job)
-		return 0, fmt.Errorf("set job limits: %w", err)
+		return 0, err
 	}
 	return job, nil
 }
