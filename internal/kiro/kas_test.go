@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +47,28 @@ func runKASHelper(args []string) int {
 			}
 		case "huge-help":
 			fmt.Print(strings.Repeat("x", kasHelpProbeLimit+1))
+			return 0
+		case "linger-help":
+			// Exit immediately, but leave a descendant holding the inherited
+			// stdout pipe so the parent's read does not see EOF.
+			exe, err := os.Executable()
+			if err != nil {
+				return 2
+			}
+			cmd := exec.Command(exe, "kas", "--help")
+			cmd.Env = append(os.Environ(), "KCLW_KAS_CASE=linger-hold")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			detachLinger(cmd)
+			if err = cmd.Start(); err != nil {
+				return 2
+			}
+			if path := os.Getenv("KCLW_KAS_LINGER_PID"); path != "" {
+				_ = os.WriteFile(path, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
+			}
+			return 0
+		case "linger-hold":
+			time.Sleep(20 * time.Second)
 			return 0
 		}
 		fmt.Println("usage: kirocrew kas [-h] {install,status,remove,login,whoami,logout} ...")

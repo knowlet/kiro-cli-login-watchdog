@@ -55,7 +55,7 @@ var kasCommandChoicesRE = regexp.MustCompile(`\{([^{}]+)\}`)
 func (c *Client) readKASHelp(ctx context.Context) ([]byte, error) {
 	cmd := c.command(ctx, "--help")
 	cmd.Env = cLocaleEnv(os.Environ())
-	return combinedOutputLimited(cmd, kasHelpProbeLimit)
+	return combinedOutputLimited(ctx, cmd, kasHelpProbeLimit)
 }
 
 // cLocaleEnv forces English gettext messages for the help probe.
@@ -72,27 +72,44 @@ func cLocaleEnv(base []string) []string {
 }
 
 // combinedOutputLimited merges stdout and stderr and stops after limit bytes.
-// A longer stream is an error; the process is killed so a writer blocked on
-// the pipe cannot hold the probe open until the command timeout.
-func combinedOutputLimited(cmd *exec.Cmd, limit int) ([]byte, error) {
+// A longer stream is an error. Cancel closes the read end before Wait: a
+// descendant that inherited the write end would otherwise keep ReadAll
+// blocked after the direct child has been killed.
+func combinedOutputLimited(ctx context.Context, cmd *exec.Cmd, limit int) ([]byte, error) {
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = reader.Close() }()
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 	if err = cmd.Start(); err != nil {
 		_ = writer.Close()
+		_ = reader.Close()
 		return nil, err
 	}
 	_ = writer.Close()
+
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Unblock ReadAll even if a grandchild still holds the write end.
+			_ = reader.Close()
+		case <-readDone:
+		}
+	}()
 	buf, readErr := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
+	close(readDone)
+	_ = reader.Close()
+
 	exceeded := len(buf) > limit
-	if exceeded && cmd.Process != nil {
+	if (exceeded || ctx.Err() != nil) && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
 	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if exceeded {
 		return nil, fmt.Errorf("probe kirocrew kas --help output exceeded %d bytes: %w", limit, errKASHelpTooLarge)
 	}
@@ -124,13 +141,28 @@ func kasAuthCommandsAvailable(help string) bool {
 	// a choice set elsewhere in the help, and not an option's choices such
 	// as "--operation {login,whoami,logout}".
 	usage := kasUsage(clean)
+	// Depth is carried forward so each byte of a large help text is visited
+	// once. Rescanning the prefix per choice set is quadratic.
+	depth := 0
+	pos := 0
 	for _, loc := range kasCommandChoicesRE.FindAllStringSubmatchIndex(usage, -1) {
 		// argparse formats subparsers as "{a,b} ..." at bracket depth zero.
 		// An option's choices stay inside its [] group, including nargs forms:
 		// nargs=N repeats "{a,b}", nargs=+ is "{a,b} [{a,b} ...]", and nargs=*
 		// or ? nests the set as "[{a,b} ...]" or "[{a,b}]". A repeat is not a
 		// subcommand list just because the flag is no longer the previous token.
-		if bracketDepth(usage[:loc[0]]) != 0 {
+		for pos < loc[0] {
+			switch usage[pos] {
+			case '[':
+				depth++
+			case ']':
+				if depth > 0 {
+					depth--
+				}
+			}
+			pos++
+		}
+		if depth != 0 {
 			continue
 		}
 		rest := strings.TrimLeft(usage[loc[1]:], " \t\r\n")
@@ -146,19 +178,4 @@ func kasAuthCommandsAvailable(help string) bool {
 		}
 	}
 	return false
-}
-
-func bracketDepth(s string) int {
-	depth := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '[':
-			depth++
-		case ']':
-			if depth > 0 {
-				depth--
-			}
-		}
-	}
-	return depth
 }

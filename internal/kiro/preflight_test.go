@@ -5,6 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -99,6 +103,83 @@ func TestKASHelpProbeForcesCLocale(t *testing.T) {
 	c := kasClient(t, "localized-help", nil)
 	if err := c.CheckCapabilities(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestKASHelpProbeCancelReapsLingeringDescendant(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "linger.pid")
+	t.Setenv("KCLW_KAS_LINGER_PID", pidPath)
+	c := kasClient(t, "linger-help", nil)
+	c.commandTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { killLingerPID(pidPath) })
+
+	started := time.Now()
+	err := c.CheckCapabilities(context.Background())
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("elapsed=%s err=%v", elapsed, err)
+	}
+	// The descendant holds the pipe for 20s. Cancel must close the read end
+	// and reap the direct child instead of waiting out that hold.
+	if elapsed > time.Second {
+		t.Fatalf("probe returned after %s; cancel did not unblock the read", elapsed)
+	}
+	pid, readErr := os.ReadFile(pidPath)
+	if readErr != nil {
+		t.Fatalf("descendant was not started: %v", readErr)
+	}
+	n, convErr := strconv.Atoi(strings.TrimSpace(string(pid)))
+	if convErr != nil || n <= 0 {
+		t.Fatalf("descendant pid %q: %v", pid, convErr)
+	}
+	if runtime.GOOS != "windows" {
+		if err := syscall.Kill(n, 0); err != nil {
+			t.Fatalf("descendant pid %d was not alive after the probe: %v", n, err)
+		}
+	}
+}
+
+func killLingerPID(path string) {
+	pid, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(pid)))
+	if err != nil || n <= 0 {
+		return
+	}
+	proc, err := os.FindProcess(n)
+	if err != nil {
+		return
+	}
+	_ = proc.Kill()
+}
+
+func TestKASChoiceScanStaysLinear(t *testing.T) {
+	var b strings.Builder
+	b.Grow(256*1024 + 64)
+	b.WriteString("usage: kirocrew kas [-h] ")
+	for b.Len() < 250*1024 {
+		b.WriteString("{x}")
+	}
+	b.WriteString("{login,whoami,logout} ...\n")
+	started := time.Now()
+	if !kasAuthCommandsAvailable(b.String()) {
+		t.Fatal("subparser after many choice sets was missed")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("choice scan took %s", elapsed)
+	}
+
+	// An unclosed option bracket still hides a later set that looks like a subparser.
+	var hidden strings.Builder
+	hidden.WriteString("usage: kirocrew kas [-h] [--operation ")
+	for hidden.Len() < 64*1024 {
+		hidden.WriteString("{login,whoami,logout} ")
+	}
+	hidden.WriteString("{login,whoami,logout} ...]\n")
+	if kasAuthCommandsAvailable(hidden.String()) {
+		t.Fatal("choice set inside an unclosed option bracket was accepted")
 	}
 }
 
